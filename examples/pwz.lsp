@@ -26,6 +26,12 @@
 ;;; discards the recursive branch.  Use right-recursive grammars
 ;;; instead (e.g. E → n + E | n).
 ;;;
+;;; This library is based on the paper
+;;; "Parsing with Zippers" by Pierce Darragh and Michael D. Adams
+;;; Their library can handle left recursion. Hashlisp cannot handle 
+;;; that, since it would require `setcar!` and `setcdr!` which doesn't
+;;; mix with hash-consing.
+;;;
 ;;; Usage:  (load "examples/pwz.lsp")
 
 ;;; ── Utilities ────────────────────────────────────────────────────
