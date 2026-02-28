@@ -174,5 +174,134 @@
     (display (eq? (car answer) (car (cdr answer))))
     (newline)))
 
+;;; ── Demo 9: Quine Generation (Classic miniKanren Benchmark) ─────
+
+(display "--- Demo 9: Quine Generation ---") (newline)
+(display "  (The standard miniKanren benchmark: find a program that") (newline)
+(display "   evaluates to itself, via a relational interpreter)") (newline)
+
+;; Additional helpers
+(define (fresh/5 f)
+  (call/fresh (lambda (a)
+    (call/fresh (lambda (b)
+      (call/fresh (lambda (c)
+        (call/fresh (lambda (d)
+          (call/fresh (lambda (e) (f a b c d e))))))))))))
+
+(define (fresh/6 f)
+  (call/fresh (lambda (a)
+    (call/fresh (lambda (b)
+      (call/fresh (lambda (c)
+        (call/fresh (lambda (d)
+          (call/fresh (lambda (e)
+            (call/fresh (lambda (g) (f a b c d e g))))))))))))))
+
+(define (conde4 g1 g2 g3 g4)
+  (disj (zzz g1) (disj (zzz g2) (disj (zzz g3) (zzz g4)))))
+
+(define (conde5 g1 g2 g3 g4 g5)
+  (disj (zzz g1) (disj (zzz g2) (disj (zzz g3) (disj (zzz g4) (zzz g5))))))
+
+;; Unification with occurs check — prevents circular substitutions
+;; like q = (quote q) that would otherwise loop during reification.
+(define (occurs? x v s)
+  (let ((v (walk v s)))
+    (cond
+      ((var? v) (eq? x v))
+      ((pair? v) (or (occurs? x (car v) s)
+                     (occurs? x (cdr v) s)))
+      (else #f))))
+
+(define (unify-check u v s)
+  (let ((u (walk u s))
+        (v (walk v s)))
+    (cond
+      ((eq? u v) s)
+      ((var? u) (if (occurs? u v s) #f (ext-s u v s)))
+      ((var? v) (if (occurs? v u s) #f (ext-s v u s)))
+      ((and (pair? u) (pair? v))
+       (let ((s (unify-check (car u) (car v) s)))
+         (if s (unify-check (cdr u) (cdr v) s) #f)))
+      (else #f))))
+
+(define (==o u v)
+  (lambda (s/c)
+    (let ((s (unify-check u v (car s/c))))
+      (if s (cons (cons s (cdr s/c)) '()) '()))))
+
+;; Relational environment lookup
+(define (lookupo x env val)
+  (fresh/3 (lambda (y v rest)
+    (conj (==o env (cons (cons y v) rest))
+          (conde2
+            (conj (==o x y) (==o val v))
+            (lookupo x rest val))))))
+
+;; Evaluate a list of expressions (for the 'list' form)
+(define (proper-listo exprs env vals)
+  (conde2
+    (conj (==o exprs '()) (==o vals '()))
+    (fresh/4 (lambda (a d va vd)
+      (conj* (list (==o exprs (cons a d))
+                   (==o vals (cons va vd))
+                   (eval-expo a env va)
+                   (proper-listo d env vd)))))))
+
+;; Goal constructors for each eval case (shared by dispatch + fallback)
+(define (quote-goal expr env val)
+  (fresh/1 (lambda (v)
+    (conj (==o expr (list 'quote v)) (==o val v)))))
+
+(define (lambda-goal expr env val)
+  (fresh/2 (lambda (x body)
+    (conj (==o expr (list 'lambda (list x) body))
+          (==o val (list 'closure x body env))))))
+
+(define (app-goal expr env val)
+  (fresh/6 (lambda (rator rand x body env2 a)
+    (conj* (list (==o expr (list rator rand))
+                 (eval-expo rator env (list 'closure x body env2))
+                 (eval-expo rand env a)
+                 (eval-expo body (cons (cons x a) env2) val))))))
+
+(define (list-goal expr env val)
+  (fresh/2 (lambda (args vals)
+    (conj* (list (==o expr (cons 'list args))
+                 (==o val vals)
+                 (proper-listo args env vals))))))
+
+;; Relational evaluator with walk-based dispatch.
+;; When the expression is concrete, dispatch directly to the right case.
+;; When unknown, try all cases with interleaving.
+(define (eval-expo expr env val)
+  (lambda (s/c)
+    (let ((e (walk expr (car s/c))))
+      (cond
+        ;; Expression is still a logic variable — try all cases
+        ((var? e)
+         ((conde5
+            (quote-goal expr env val)
+            (lookupo expr env val)
+            (lambda-goal expr env val)
+            (app-goal expr env val)
+            (list-goal expr env val)) s/c))
+        ;; Atom (symbol or other non-pair) — only variable lookup applies
+        ((not (pair? e))
+         ((lookupo expr env val) s/c))
+        ;; Pair — dispatch on head tag
+        (else
+         (let ((head (walk (car e) (car s/c))))
+           (cond
+             ((eq? head 'quote)  ((quote-goal  expr env val) s/c))
+             ((eq? head 'lambda) ((lambda-goal expr env val) s/c))
+             ((eq? head 'list)   ((list-goal   expr env val) s/c))
+             (else               ((app-goal    expr env val) s/c)))))))))
+
+(display "  Searching for a quine...") (newline)
+(let ((result (run 1 (lambda (q) (eval-expo q '() q)))))
+  (display "  Found: ")
+  (display result)
+  (newline))
+
 (newline)
 (display "All demos passed.") (newline)
