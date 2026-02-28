@@ -145,4 +145,3 @@ least to Eliichi Goto's [^1] HLISP, outlined in [Monocopy and Associative Algori
 
 
 [^1]: A computer scientist whose name is Goto is just *chef's kiss*.
-And his HLISP, short for Hash-LISP — Hashlisp! 
