@@ -1,0 +1,9 @@
+[package]
+name = "hashlisp"
+version = "0.1.0"
+edition = "2024"
+description = "A Scheme-like language with a hash-consed heap"
+license = "MIT"
+
+[dependencies]
+rustyline = "14"
