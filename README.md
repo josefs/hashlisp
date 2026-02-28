@@ -144,5 +144,5 @@ The idea of using Hash consing in Lisp is an old one. It dates back at
 least to Eliichi Goto's [^1] HLISP, outlined in [Monocopy and Associative Algorithms in an Extended Lisp](https://www.cs.utexas.edu/~hunt/research/hash-cons/hash-cons-papers/monocopy-goto.pdf)
 
 
-[^1] a computer scientist who's name is Goto is just *chef's kiss*
-and his HLISP, short for Hash-LISP. Hashlisp 
+[^1]: A computer scientist whose name is Goto is just *chef's kiss*.
+And his HLISP, short for Hash-LISP — Hashlisp! 
