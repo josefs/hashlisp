@@ -90,22 +90,26 @@ leaves 61 bits of payload for hashes.
 The `examples/` directory contains libraries and demos that showcase what
 hash-consing enables:
 
-| File | What it does |
-|---|---|
-| [hash-consing-demo.lsp](examples/hash-consing-demo.lsp) | Core hash-consing properties and `eq?` identity |
-| [bdd.lsp](examples/bdd.lsp) | BDD library — sharing is free due to hash-consing |
-| [ctl.lsp](examples/ctl.lsp) | Symbolic CTL model checker built on BDDs |
-| [eqsat.lsp](examples/eqsat.lsp) | Equality saturation with e-graphs |
-| [hashlife.lsp](examples/hashlife.lsp) | Gosper's HashLife — quadtree hashing and sharing is free |
-| [sets.lsp](examples/sets.lsp) | Functional sets & maps via hash tries with canonical `eq?` |
-| [kanren.lsp](examples/kanren.lsp) | miniKanren logic programming |
-| [pwz.lsp](examples/pwz.lsp) | Parsing with Zippers (Brzozowski derivatives) |
-| [let-insertion.lsp](examples/let-insertion.lsp) | DAG→let* serialization + symbolic differentiation |
-| [metacircular.lsp](examples/metacircular.lsp) | Metacircular evaluator |
-| [church.lsp](examples/church.lsp) | Church numerals in pure lambda calculus |
-| [streams.lsp](examples/streams.lsp) | Lazy streams |
-| [mergesort.lsp](examples/mergesort.lsp) | Merge sort |
-| [quine.lsp](examples/quine.lsp) | A quine |
+| File | Demo | What it does |
+|---|---|---|
+| [hash-consing-demo.lsp](examples/hash-consing-demo.lsp) | --- | Core hash-consing properties and `eq?` identity |
+| [bdd.lsp](examples/bdd.lsp) | [demo](examples/bdd-demo.lsp) | BDD library — sharing is free due to hash-consing |
+| [ctl.lsp](examples/ctl.lsp) | [demo](examples/ctl-demo.lsp) | Symbolic CTL model checker built on BDDs |
+| [eqsat.lsp](examples/eqsat.lsp) | [demo](examples/eqsat-demo.lsp) | Equality saturation with e-graphs |
+| [hashlife.lsp](examples/hashlife.lsp) | [demo](examples/hashlife-demo.lsp) | Gosper's HashLife — quadtree hashing and sharing is free |
+| [sets.lsp](examples/sets.lsp) | [demo](examples/sets-demo.lsp) | Functional sets & maps via hash tries with canonical `eq?` |
+| [kanren.lsp](examples/kanren.lsp) | [demo](examples/kanren-demo.lsp) | miniKanren logic programming |
+| [pwz.lsp](examples/pwz.lsp) | [demo](examples/pwz-demo.lsp) | Parsing with Zippers (Brzozowski derivatives) |
+| [let-insertion.lsp](examples/let-insertion.lsp) | [demo](examples/let-insertion-demo.lsp) | DAG→let* serialization + symbolic differentiation |
+| [metacircular.lsp](examples/metacircular.lsp) | --- | Metacircular evaluator |
+| [metacircular-memo.lsp](examples/metacircular-memo.lsp) | --- | Memoized metacircular evaluator |
+| [macros-demo.lsp](examples/macros-demo.lsp) | --- | Macro system demo |
+| [church.lsp](examples/church.lsp) | --- | Church numerals in pure lambda calculus |
+| [streams.lsp](examples/streams.lsp) | --- | Lazy streams |
+| [fibonacci.lsp](examples/fibonacci.lsp) | --- | Fibonacci with hash-consing |
+| [mergesort.lsp](examples/mergesort.lsp) | --- | Merge sort |
+| [gc-stress.lsp](examples/gc-stress.lsp) | --- | GC stress test |
+| [quine.lsp](examples/quine.lsp) | --- | A quine |
 
 Each file is relatively well documented.
 
