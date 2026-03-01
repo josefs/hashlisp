@@ -11,7 +11,7 @@ use crate::env::EnvStore;
 use crate::heap::Heap;
 use crate::parser;
 use crate::symbol::SymbolTable;
-use crate::value::Val;
+use crate::value::{Val, TAG_INT, TAG_BOOL, TAG_NIL, TAG_CHAR, TAG_SYMBOL, TAG_HEAP, TAG_BUILTIN, TAG_VOID};
 use crate::printer;
 
 /// The result of evaluation: either a final value or a tail-call to trampoline.
@@ -190,116 +190,98 @@ impl Evaluator {
     }
 
     fn eval_inner_impl(&mut self, expr: Val, env_id: usize) -> Result<Trampoline, String> {
+        match expr.tag() {
+            TAG_INT | TAG_BOOL | TAG_NIL | TAG_CHAR | TAG_BUILTIN | TAG_VOID => {
+                Ok(Trampoline::Done(expr))
+            }
 
-        // ── Self-evaluating ──
-        if let Some(_) = expr.as_int() {
-            return Ok(Trampoline::Done(expr));
-        }
-        if let Some(_) = expr.as_bool() {
-            return Ok(Trampoline::Done(expr));
-        }
-        if let Some(_) = expr.as_char() {
-            return Ok(Trampoline::Done(expr));
-        }
-        if expr.is_nil() {
-            return Ok(Trampoline::Done(expr));
-        }
-        if expr.is_void() {
-            return Ok(Trampoline::Done(expr));
-        }
-        if let Some(_) = expr.as_builtin() {
-            return Ok(Trampoline::Done(expr));
-        }
-
-        // ── String literal (heap) ──
-        if expr.is_heap() && self.heap.is_string(expr) {
-            return Ok(Trampoline::Done(expr));
-        }
-
-        // ── Symbol → lookup ──
-        if let Some(sym_id) = expr.as_symbol() {
-            return match self.envs.get(env_id, sym_id) {
-                Some(val) => Ok(Trampoline::Done(val)),
-                None => Err(format!("unbound variable: {}", self.syms.name(sym_id))),
-            };
-        }
-
-        // ── List (application or special form) ──
-        if expr.is_heap() && self.heap.is_cons(expr) {
-            let car = self.heap.car(expr).unwrap();
-            let cdr = self.heap.cdr(expr).unwrap();
-
-            // Special forms (check if car is a known symbol)
-            if let Some(sym_id) = car.as_symbol() {
-                if sym_id == self.sym_quote {
-                    return self.eval_quote(cdr);
-                }
-                if sym_id == self.sym_if {
-                    return self.eval_if(cdr, env_id);
-                }
-                if sym_id == self.sym_cond {
-                    return self.eval_cond(cdr, env_id);
-                }
-                if sym_id == self.sym_define {
-                    return self.eval_define(cdr, env_id);
-                }
-                if sym_id == self.sym_lambda {
-                    return self.eval_lambda(cdr, env_id);
-                }
-                if sym_id == self.sym_let {
-                    return self.eval_let(cdr, env_id);
-                }
-                if sym_id == self.sym_letstar {
-                    return self.eval_let_star(cdr, env_id);
-                }
-                if sym_id == self.sym_letrec {
-                    return self.eval_letrec(cdr, env_id);
-                }
-                if sym_id == self.sym_begin {
-                    return self.eval_begin(cdr, env_id);
-                }
-                if sym_id == self.sym_set {
-                    return self.eval_set(cdr, env_id);
-                }
-                if sym_id == self.sym_and {
-                    return self.eval_and(cdr, env_id);
-                }
-                if sym_id == self.sym_or {
-                    return self.eval_or(cdr, env_id);
-                }
-                if sym_id == self.sym_when {
-                    return self.eval_when(cdr, env_id);
-                }
-                if sym_id == self.sym_unless {
-                    return self.eval_unless(cdr, env_id);
-                }
-                if sym_id == self.sym_quasiquote {
-                    let template = self.heap.car(cdr).ok_or("quasiquote: expected argument")?;
-                    let result = self.eval_quasiquote(template, env_id)?;
-                    return Ok(Trampoline::Done(result));
-                }
-                if sym_id == self.sym_define_macro {
-                    return self.eval_define_macro(cdr, env_id);
-                }
-                if sym_id == self.sym_define_memo {
-                    return self.eval_define_memo(cdr, env_id);
-                }
-                // Check for macro invocation
-                if self.macros.contains_key(&sym_id) {
-                    return self.eval_macro_call(sym_id, cdr, env_id);
+            TAG_SYMBOL => {
+                let sym_id = expr.payload() as u32;
+                match self.envs.get(env_id, sym_id) {
+                    Some(val) => Ok(Trampoline::Done(val)),
+                    None => Err(format!("unbound variable: {}", self.syms.name(sym_id))),
                 }
             }
 
-            // Regular application
-            return self.eval_apply(car, cdr, env_id);
+            TAG_HEAP => {
+                if self.heap.is_cons(expr) {
+                    return self.eval_cons(expr, env_id);
+                }
+                // Strings, vectors, closures are self-evaluating
+                Ok(Trampoline::Done(expr))
+            }
+
+            _ => Err(format!("cannot evaluate: {:?}", expr)),
+        }
+    }
+
+    fn eval_cons(&mut self, expr: Val, env_id: usize) -> Result<Trampoline, String> {
+        let car = self.heap.car(expr).unwrap();
+        let cdr = self.heap.cdr(expr).unwrap();
+
+        // Special forms (check if car is a known symbol)
+        if let Some(sym_id) = car.as_symbol() {
+            if sym_id == self.sym_quote {
+                return self.eval_quote(cdr);
+            }
+            if sym_id == self.sym_if {
+                return self.eval_if(cdr, env_id);
+            }
+            if sym_id == self.sym_cond {
+                return self.eval_cond(cdr, env_id);
+            }
+            if sym_id == self.sym_define {
+                return self.eval_define(cdr, env_id);
+            }
+            if sym_id == self.sym_lambda {
+                return self.eval_lambda(cdr, env_id);
+            }
+            if sym_id == self.sym_let {
+                return self.eval_let(cdr, env_id);
+            }
+            if sym_id == self.sym_letstar {
+                return self.eval_let_star(cdr, env_id);
+            }
+            if sym_id == self.sym_letrec {
+                return self.eval_letrec(cdr, env_id);
+            }
+            if sym_id == self.sym_begin {
+                return self.eval_begin(cdr, env_id);
+            }
+            if sym_id == self.sym_set {
+                return self.eval_set(cdr, env_id);
+            }
+            if sym_id == self.sym_and {
+                return self.eval_and(cdr, env_id);
+            }
+            if sym_id == self.sym_or {
+                return self.eval_or(cdr, env_id);
+            }
+            if sym_id == self.sym_when {
+                return self.eval_when(cdr, env_id);
+            }
+            if sym_id == self.sym_unless {
+                return self.eval_unless(cdr, env_id);
+            }
+            if sym_id == self.sym_quasiquote {
+                let template = self.heap.car(cdr).ok_or("quasiquote: expected argument")?;
+                let result = self.eval_quasiquote(template, env_id)?;
+                return Ok(Trampoline::Done(result));
+            }
+            if sym_id == self.sym_define_macro {
+                return self.eval_define_macro(cdr, env_id);
+            }
+            if sym_id == self.sym_define_memo {
+                return self.eval_define_memo(cdr, env_id);
+            }
+            // Check for macro invocation
+            if self.macros.contains_key(&sym_id) {
+                return self.eval_macro_call(sym_id, cdr, env_id);
+            }
         }
 
-        // Vectors and closures are also self-evaluating
-        if expr.is_heap() {
-            return Ok(Trampoline::Done(expr));
-        }
-
-        Err(format!("cannot evaluate: {:?}", expr))
+        // Regular application
+        self.eval_apply(car, cdr, env_id)
     }
 
     // ── Special forms ──
