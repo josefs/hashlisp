@@ -20,10 +20,6 @@ pub fn display_val(val: Val, heap: &Heap, syms: &SymbolTable) -> String {
 }
 
 fn write_val(val: Val, heap: &Heap, syms: &SymbolTable, buf: &mut String, quoting: bool) {
-    if let Some(f) = val.as_float() {
-        buf.push_str(&format!("{f}"));
-        return;
-    }
     if let Some(i) = val.as_int() {
         buf.push_str(&i.to_string());
         return;

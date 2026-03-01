@@ -24,7 +24,6 @@ pub enum Token {
     Dot,
     HashLParen,      // #(
     Int(i64),
-    Float(f64),
     Str(String),
     Symbol(String),
     Bool(bool),
@@ -133,10 +132,6 @@ impl<'a> Lexer<'a> {
         // Try integer
         if let Ok(i) = text.parse::<i64>() {
             return Token::Int(i);
-        }
-        // Try float
-        if let Ok(f) = text.parse::<f64>() {
-            return Token::Float(f);
         }
         Token::Symbol(text.to_string())
     }
@@ -288,7 +283,6 @@ impl<'a> Parser<'a> {
         match self.advance() {
             None => Err("unexpected end of input".into()),
             Some(Token::Int(i)) => Ok(Val::int(*i)),
-            Some(Token::Float(f)) => Ok(Val::float(*f)),
             Some(Token::Bool(b)) => Ok(Val::boolean(*b)),
             Some(Token::Char(c)) => Ok(Val::char_(*c)),
             Some(Token::Str(s)) => {

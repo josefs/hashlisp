@@ -43,9 +43,10 @@ Some cool libraries that are implemented in hashlisp:
 
 ## Language
 
-Hashlisp is a dynamically typed Scheme dialect. Values are NaN-boxed
-into 64-bit words — integers, floats, booleans, characters, symbols,
-and heap references all fit in a single machine word.
+Hashlisp is a dynamically typed Scheme dialect. Values are tagged
+into 64-bit words — integers, booleans, characters, symbols,
+and heap references all fit in a single machine word. A 3-bit tag
+leaves 61 bits of payload for hashes.
 
 ### Special Forms
 
@@ -53,11 +54,11 @@ and heap references all fit in a single machine word.
 `set!`, `and`, `or`, `when`, `unless`, `quote`, `quasiquote`,
 `define-macro`, `define-memo`, `apply`
 
-### Builtins (85)
+### Builtins (83)
 
 | Category | Functions |
 |---|---|
-| Arithmetic | `+` `-` `*` `/` `=` `<` `>` `<=` `>=` `modulo` `remainder` `abs` `min` `max` `expt` `sqrt` `floor` `ceiling` `truncate` `round` `exact->inexact` `inexact->exact` |
+| Arithmetic | `+` `-` `*` `/` `=` `<` `>` `<=` `>=` `modulo` `remainder` `abs` `min` `max` `expt` `sqrt` `floor` `ceiling` `truncate` `round` |
 | Predicates | `null?` `pair?` `list?` `number?` `symbol?` `string?` `boolean?` `char?` `procedure?` `vector?` `void?` `zero?` `positive?` `negative?` `even?` `odd?` |
 | Pairs & Lists | `cons` `car` `cdr` `cadr` `caddr` `cddr` `caar` `cdar` `list` `length` `append` `reverse` |
 | Higher-Order | `map` `filter` `fold` `for-each` `apply` |
@@ -114,7 +115,7 @@ Each file is relatively well documented.
 
 | Module | Role |
 |---|---|
-| `value.rs` | NaN-boxed 64-bit value representation |
+| `value.rs` | Tagged 64-bit value representation (3-bit tag, 61-bit payload) |
 | `heap.rs` | Hash-consed heap (FNV-1a, per-type salts) + mark-and-sweep GC |
 | `symbol.rs` | Interned symbol table |
 | `parser.rs` | S-expression lexer and parser |
@@ -134,7 +135,7 @@ Mark-and-sweep with roots from:
 ### Hash Function
 
 FNV-1a with per-type salts (`SALT_CONS`, `SALT_STRING`, `SALT_VECTOR`,
-`SALT_CLOSURE`) folded into a 46-bit payload that fits the NaN-box.
+`SALT_CLOSURE`) folded into a 61-bit payload that fits the tagged word.
 Closures get monotonic IDs (they capture mutable environments, so they
 can't be shared by structure).
 

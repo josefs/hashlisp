@@ -195,9 +195,6 @@ impl Evaluator {
         if let Some(_) = expr.as_int() {
             return Ok(Trampoline::Done(expr));
         }
-        if let Some(_) = expr.as_float() {
-            return Ok(Trampoline::Done(expr));
-        }
         if let Some(_) = expr.as_bool() {
             return Ok(Trampoline::Done(expr));
         }
@@ -1131,8 +1128,6 @@ impl Evaluator {
             ("ceiling", 75),
             ("truncate", 76),
             ("round", 77),
-            ("exact->inexact", 78),
-            ("inexact->exact", 79),
             ("write", 80),
             ("display-string", 81),
             ("load", 82),
@@ -1212,7 +1207,7 @@ impl Evaluator {
             }
             20 => Ok(Val::boolean(
                 args.get(0)
-                    .map_or(false, |v| v.as_int().is_some() || v.as_float().is_some()),
+                    .map_or(false, |v| v.as_int().is_some()),
             )),
             21 => Ok(Val::boolean(
                 args.get(0).map_or(false, |v| v.as_symbol().is_some()),
@@ -1270,8 +1265,6 @@ impl Evaluator {
                 let v = args.get(0).ok_or("number->string: expected number")?;
                 let s = if let Some(i) = v.as_int() {
                     i.to_string()
-                } else if let Some(f) = v.as_float() {
-                    format!("{f}")
                 } else {
                     return Err("number->string: not a number".into());
                 };
@@ -1285,8 +1278,6 @@ impl Evaluator {
                     .ok_or("string->number: not a string")?;
                 if let Ok(i) = s.parse::<i64>() {
                     Ok(Val::int(i))
-                } else if let Ok(f) = s.parse::<f64>() {
-                    Ok(Val::float(f))
                 } else {
                     Ok(Val::boolean(false))
                 }
@@ -1326,8 +1317,6 @@ impl Evaluator {
                 let v = args.get(0).ok_or("abs: expected number")?;
                 if let Some(i) = v.as_int() {
                     Ok(Val::int(i.abs()))
-                } else if let Some(f) = v.as_float() {
-                    Ok(Val::float(f.abs()))
                 } else {
                     Err("abs: not a number".into())
                 }
@@ -1343,15 +1332,13 @@ impl Evaluator {
             36 => {
                 // zero?
                 let v = args.get(0).ok_or("zero?: expected number")?;
-                Ok(Val::boolean(v.as_int() == Some(0) || v.as_float() == Some(0.0)))
+                Ok(Val::boolean(v.as_int() == Some(0)))
             }
             37 => {
                 // positive?
                 let v = args.get(0).ok_or("positive?: expected number")?;
                 if let Some(i) = v.as_int() {
                     Ok(Val::boolean(i > 0))
-                } else if let Some(f) = v.as_float() {
-                    Ok(Val::boolean(f > 0.0))
                 } else {
                     Err("positive?: not a number".into())
                 }
@@ -1361,8 +1348,6 @@ impl Evaluator {
                 let v = args.get(0).ok_or("negative?: expected number")?;
                 if let Some(i) = v.as_int() {
                     Ok(Val::boolean(i < 0))
-                } else if let Some(f) = v.as_float() {
-                    Ok(Val::boolean(f < 0.0))
                 } else {
                     Err("negative?: not a number".into())
                 }
@@ -1697,46 +1682,37 @@ impl Evaluator {
                 let exp = args.get(1).ok_or("expt: expected exponent")?;
                 match (base.as_int(), exp.as_int()) {
                     (Some(b), Some(e)) if e >= 0 => Ok(Val::int(b.pow(e as u32))),
-                    _ => {
-                        let b = self.to_f64(*base)?;
-                        let e = self.to_f64(*exp)?;
-                        Ok(Val::float(b.powf(e)))
-                    }
+                    (Some(_), Some(_)) => Err("expt: negative exponent not supported without floats".into()),
+                    _ => Err("expt: expected integers".into()),
                 }
             }
             73 => {
-                let v = self.to_f64(*args.get(0).ok_or("sqrt: expected number")?)?;
-                Ok(Val::float(v.sqrt()))
+                // sqrt (integer square root)
+                let v = args.get(0).and_then(|v| v.as_int()).ok_or("sqrt: expected integer")?;
+                if v < 0 {
+                    return Err("sqrt: negative argument".into());
+                }
+                Ok(Val::int((v as f64).sqrt() as i64))
             }
             74 => {
-                let v = self.to_f64(*args.get(0).ok_or("floor: expected number")?)?;
-                Ok(Val::int(v.floor() as i64))
+                // floor — identity on integers
+                let v = args.get(0).and_then(|v| v.as_int()).ok_or("floor: expected integer")?;
+                Ok(Val::int(v))
             }
             75 => {
-                let v = self.to_f64(*args.get(0).ok_or("ceiling: expected number")?)?;
-                Ok(Val::int(v.ceil() as i64))
+                // ceiling — identity on integers
+                let v = args.get(0).and_then(|v| v.as_int()).ok_or("ceiling: expected integer")?;
+                Ok(Val::int(v))
             }
             76 => {
-                let v = self.to_f64(*args.get(0).ok_or("truncate: expected number")?)?;
-                Ok(Val::int(v.trunc() as i64))
+                // truncate — identity on integers
+                let v = args.get(0).and_then(|v| v.as_int()).ok_or("truncate: expected integer")?;
+                Ok(Val::int(v))
             }
             77 => {
-                let v = self.to_f64(*args.get(0).ok_or("round: expected number")?)?;
-                Ok(Val::int(v.round() as i64))
-            }
-            78 => {
-                // exact->inexact
-                let v = args.get(0).ok_or("exact->inexact: expected number")?;
-                Ok(Val::float(self.to_f64(*v)?))
-            }
-            79 => {
-                // inexact->exact
-                let v = args.get(0).ok_or("inexact->exact: expected number")?;
-                if let Some(f) = v.as_float() {
-                    Ok(Val::int(f as i64))
-                } else {
-                    Ok(*v)
-                }
+                // round — identity on integers
+                let v = args.get(0).and_then(|v| v.as_int()).ok_or("round: expected integer")?;
+                Ok(Val::int(v))
             }
             80 => {
                 // write (with quoting for strings/chars)
@@ -1810,42 +1786,24 @@ impl Evaluator {
 
     // ── Arithmetic helpers ──
 
-    fn to_f64(&self, v: Val) -> Result<f64, String> {
+    fn to_int(&self, v: Val) -> Result<i64, String> {
         if let Some(i) = v.as_int() {
-            Ok(i as f64)
-        } else if let Some(f) = v.as_float() {
-            Ok(f)
+            Ok(i)
         } else {
             Err("expected a number".into())
         }
     }
 
     fn builtin_add(&self, args: &[Val]) -> Result<Val, String> {
-        let mut int_sum: i64 = 0;
-        let mut is_float = false;
-        let mut float_sum: f64 = 0.0;
+        let mut sum: i64 = 0;
         for v in args {
             if let Some(i) = v.as_int() {
-                if is_float {
-                    float_sum += i as f64;
-                } else {
-                    int_sum += i;
-                }
-            } else if let Some(f) = v.as_float() {
-                if !is_float {
-                    float_sum = int_sum as f64;
-                    is_float = true;
-                }
-                float_sum += f;
+                sum += i;
             } else {
                 return Err("+: expected numbers".into());
             }
         }
-        if is_float {
-            Ok(Val::float(float_sum))
-        } else {
-            Ok(Val::int(int_sum))
-        }
+        Ok(Val::int(sum))
     }
 
     fn builtin_sub(&self, args: &[Val]) -> Result<Val, String> {
@@ -1856,85 +1814,55 @@ impl Evaluator {
             if let Some(i) = args[0].as_int() {
                 return Ok(Val::int(-i));
             }
-            if let Some(f) = args[0].as_float() {
-                return Ok(Val::float(-f));
-            }
             return Err("-: expected number".into());
         }
-        let mut result = self.to_f64(args[0])?;
-        let mut is_float = args[0].as_float().is_some();
+        let mut result = self.to_int(args[0])?;
         for v in &args[1..] {
-            let n = self.to_f64(*v)?;
-            result -= n;
-            if v.as_float().is_some() {
-                is_float = true;
-            }
+            result -= self.to_int(*v)?;
         }
-        if is_float {
-            Ok(Val::float(result))
-        } else {
-            Ok(Val::int(result as i64))
-        }
+        Ok(Val::int(result))
     }
 
     fn builtin_mul(&self, args: &[Val]) -> Result<Val, String> {
-        let mut int_prod: i64 = 1;
-        let mut is_float = false;
-        let mut float_prod: f64 = 1.0;
+        let mut prod: i64 = 1;
         for v in args {
             if let Some(i) = v.as_int() {
-                if is_float {
-                    float_prod *= i as f64;
-                } else {
-                    int_prod *= i;
-                }
-            } else if let Some(f) = v.as_float() {
-                if !is_float {
-                    float_prod = int_prod as f64;
-                    is_float = true;
-                }
-                float_prod *= f;
+                prod *= i;
             } else {
                 return Err("*: expected numbers".into());
             }
         }
-        if is_float {
-            Ok(Val::float(float_prod))
-        } else {
-            Ok(Val::int(int_prod))
-        }
+        Ok(Val::int(prod))
     }
 
     fn builtin_div(&self, args: &[Val]) -> Result<Val, String> {
         if args.is_empty() {
             return Err("/: expected at least one argument".into());
         }
-        let mut result = self.to_f64(args[0])?;
+        let mut result = self.to_int(args[0])?;
         if args.len() == 1 {
-            return Ok(Val::float(1.0 / result));
+            if result == 0 {
+                return Err("/: division by zero".into());
+            }
+            return Ok(Val::int(1 / result));
         }
         for v in &args[1..] {
-            let n = self.to_f64(*v)?;
-            if n == 0.0 {
+            let n = self.to_int(*v)?;
+            if n == 0 {
                 return Err("/: division by zero".into());
             }
             result /= n;
         }
-        // If result is an exact integer, return int
-        if result == (result as i64 as f64) && args.iter().all(|v| v.as_int().is_some()) {
-            Ok(Val::int(result as i64))
-        } else {
-            Ok(Val::float(result))
-        }
+        Ok(Val::int(result))
     }
 
     fn builtin_eq_num(&self, args: &[Val]) -> Result<Val, String> {
         if args.len() < 2 {
             return Ok(Val::boolean(true));
         }
-        let first = self.to_f64(args[0])?;
+        let first = self.to_int(args[0])?;
         for v in &args[1..] {
-            if self.to_f64(*v)? != first {
+            if self.to_int(*v)? != first {
                 return Ok(Val::boolean(false));
             }
         }
@@ -1957,13 +1885,13 @@ impl Evaluator {
         self.numeric_cmp(args, |a, b| a >= b)
     }
 
-    fn numeric_cmp(&self, args: &[Val], cmp: fn(f64, f64) -> bool) -> Result<Val, String> {
+    fn numeric_cmp(&self, args: &[Val], cmp: fn(i64, i64) -> bool) -> Result<Val, String> {
         if args.len() < 2 {
             return Ok(Val::boolean(true));
         }
-        let mut prev = self.to_f64(args[0])?;
+        let mut prev = self.to_int(args[0])?;
         for v in &args[1..] {
-            let curr = self.to_f64(*v)?;
+            let curr = self.to_int(*v)?;
             if !cmp(prev, curr) {
                 return Ok(Val::boolean(false));
             }
@@ -1976,47 +1904,16 @@ impl Evaluator {
         &self,
         args: &[Val],
         int_op: fn(i64, i64) -> i64,
-        float_op: fn(f64, f64) -> f64,
+        _float_op: fn(f64, f64) -> f64,
     ) -> Result<Val, String> {
         if args.is_empty() {
             return Err("expected at least one argument".into());
         }
-        let mut is_float = false;
-        let mut int_acc = 0i64;
-        let mut float_acc = 0.0f64;
-
-        if let Some(i) = args[0].as_int() {
-            int_acc = i;
-        } else if let Some(f) = args[0].as_float() {
-            float_acc = f;
-            is_float = true;
-        } else {
-            return Err("expected number".into());
-        }
-
+        let mut acc = self.to_int(args[0])?;
         for v in &args[1..] {
-            if let Some(i) = v.as_int() {
-                if is_float {
-                    float_acc = float_op(float_acc, i as f64);
-                } else {
-                    int_acc = int_op(int_acc, i);
-                }
-            } else if let Some(f) = v.as_float() {
-                if !is_float {
-                    float_acc = int_acc as f64;
-                    is_float = true;
-                }
-                float_acc = float_op(float_acc, f);
-            } else {
-                return Err("expected number".into());
-            }
+            acc = int_op(acc, self.to_int(*v)?);
         }
-
-        if is_float {
-            Ok(Val::float(float_acc))
-        } else {
-            Ok(Val::int(int_acc))
-        }
+        Ok(Val::int(acc))
     }
 
     fn builtin_cons(&mut self, args: &[Val]) -> Result<Val, String> {
@@ -2061,12 +1958,7 @@ impl Evaluator {
                 _ => false,
             }
         } else {
-            // Compare numbers across int/float
-            if let (Ok(fa), Ok(fb)) = (self.to_f64(a), self.to_f64(b)) {
-                fa == fb
-            } else {
-                false
-            }
+            false
         }
     }
 

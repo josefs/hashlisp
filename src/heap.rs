@@ -15,15 +15,13 @@
 
 use std::collections::HashMap;
 
-use crate::value::Val;
+use crate::value::{Val, PAYLOAD_MASK};
 
 // ── Salts for different heap object kinds ──
 const SALT_CONS: u64 = 0xBEEF_CAFE_1234;
 const SALT_STRING: u64 = 0xDEAD_F00D_5678;
 const SALT_CLOSURE: u64 = 0xC105_ED00_9ABC;
 const SALT_VECTOR: u64 = 0xBADC_0FFE_E135;
-
-const PAYLOAD_MASK: u64 = (1u64 << 46) - 1;
 
 /// The kinds of objects stored on the hash-consed heap.
 #[derive(Debug, Clone)]
