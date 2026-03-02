@@ -101,8 +101,8 @@ hash-consing enables:
 | [kanren.lsp](examples/kanren.lsp) | [demo file](examples/kanren-demo.lsp) | miniKanren logic programming |
 | [pwz.lsp](examples/pwz.lsp) | [demo file](examples/pwz-demo.lsp) | Parsing with Zippers (Brzozowski derivatives) |
 | [let-insertion.lsp](examples/let-insertion.lsp) | [demo file](examples/let-insertion-demo.lsp) | DAG→let* serialization + symbolic differentiation |
-| [metacircular.lsp](examples/metacircular.lsp) | --- | Metacircular evaluator |
-| [metacircular-memo.lsp](examples/metacircular-memo.lsp) | --- | Memoized metacircular evaluator |
+| [metacircular.lsp](examples/metacircular.lsp) | [demo file](examples/metacircular-demo.lsp) | Metacircular evaluator |
+| [metacircular-memo.lsp](examples/metacircular-memo.lsp) | [demo file](examples/metacircular-memo-demo.lsp) | Memoized metacircular evaluator (loads metacircular.lsp) |
 | [macros-demo.lsp](examples/macros-demo.lsp) | --- | Macro system demo |
 | [church.lsp](examples/church.lsp) | --- | Church numerals in pure lambda calculus |
 | [streams.lsp](examples/streams.lsp) | --- | Lazy streams |
