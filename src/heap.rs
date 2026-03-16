@@ -1,7 +1,7 @@
 ///! Hash-consed heap.
 ///!
 ///! Every compound value (cons, string, closure, vector) lives on the heap,
-///! keyed by a 46-bit hash derived from its contents.  Before allocating, we
+///! keyed by a 61-bit hash derived from its contents.  Before allocating, we
 ///! compute the hash and check if an identical value already exists.  If so we
 ///! return the existing hash — this is "hash-consing".
 ///!
@@ -20,7 +20,7 @@ use crate::value::{Val, PAYLOAD_MASK};
 
 /// A hasher that passes through a pre-hashed u64 unchanged.
 /// Keys in our heap table are already high-quality FNV hashes,
-/// so re-hashing them would be redundant.
+/// so re-hashing them is redundant.
 #[derive(Default)]
 struct IdentityHasher(u64);
 
