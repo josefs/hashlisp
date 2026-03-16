@@ -14,8 +14,29 @@
 ///! Garbage collection: mark-and-sweep from a set of root Val's.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::value::{Val, PAYLOAD_MASK};
+
+/// A hasher that passes through a pre-hashed u64 unchanged.
+/// Keys in our heap table are already high-quality FNV hashes,
+/// so re-hashing them would be redundant.
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("IdentityHasher only supports u64 keys");
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type PreHashedMap<V> = HashMap<u64, V, BuildHasherDefault<IdentityHasher>>;
 
 // ── Salts for different heap object kinds ──
 const SALT_CONS: u64 = 0xBEEF_CAFE_1234;
@@ -48,8 +69,8 @@ struct HeapEntry {
 }
 
 pub struct Heap {
-    /// hash → entry
-    table: HashMap<u64, HeapEntry>,
+    /// hash → entry (uses identity hasher since keys are already hashed)
+    table: PreHashedMap<HeapEntry>,
     /// Monotonic counter for things that must be unique (closures)
     next_unique: u64,
 }
@@ -57,7 +78,7 @@ pub struct Heap {
 impl Heap {
     pub fn new() -> Self {
         Heap {
-            table: HashMap::new(),
+            table: PreHashedMap::default(),
             next_unique: 1,
         }
     }
