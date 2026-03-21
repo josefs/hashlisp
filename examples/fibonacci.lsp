@@ -9,8 +9,16 @@
   (if (< n 2) n
       (+ (fib-naive (- n 1)) (fib-naive (- n 2)))))
 
+;; Efficient naive implementation using memoization
+;; Using `define-memo` makes the naive implementation linear
+(define-memo (fib n)
+  (if (< n 2) n
+    (+ (fib (- n 1)) (fib (- n 2)))
+  )
+)
+
 ;; Tail-recursive with accumulator (linear, uses TCO)
-(define (fib n)
+(define (fib-tail n)
   (define (loop i a b)
     (if (= i n) a
         (loop (+ i 1) b (+ a b))))
