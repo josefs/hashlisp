@@ -1,13 +1,14 @@
 ///! Evaluator for Hashlisp — a tree-walking interpreter.
 ///!
 ///! Supports: define, lambda, if, cond, let, let*, letrec, begin, quote,
-///!           set!, and, or, do (named let).
+///!           and, or, when, unless.
+///! Environments are hash-consed alists on the heap, enabling closure sharing.
 ///! Tail-call optimization via an explicit trampoline loop.
 
 use std::collections::HashMap;
 use std::io::Write;
 
-use crate::env::EnvStore;
+use crate::env;
 use crate::heap::Heap;
 use crate::parser;
 use crate::symbol::SymbolTable;
@@ -17,15 +18,16 @@ use crate::printer;
 /// The result of evaluation: either a final value or a tail-call to trampoline.
 enum Trampoline {
     Done(Val),
-    TailCall { expr: Val, env_id: usize },
+    TailCall { expr: Val, env: Val },
 }
 
 #[allow(dead_code)]
 pub struct Evaluator {
     pub heap: Heap,
     pub syms: SymbolTable,
-    pub envs: EnvStore,
-    pub global_env: usize,
+    /// Global bindings — mutable table so recursive defines work.
+    /// Not captured by closures; looked up as a fallback during evaluation.
+    pub globals: HashMap<u32, Val>,
     gc_threshold: usize,
     alloc_since_gc: usize,
     /// Extra GC roots — e.g. parsed but not-yet-evaluated expressions.
@@ -48,7 +50,6 @@ pub struct Evaluator {
     sym_letstar: u32,
     sym_letrec: u32,
     sym_begin: u32,
-    sym_set: u32,
     sym_and: u32,
     sym_or: u32,
     sym_else: u32,
@@ -66,9 +67,7 @@ pub struct Evaluator {
 impl Evaluator {
     pub fn new() -> Self {
         let mut syms = SymbolTable::new();
-        let mut envs = EnvStore::new();
         let heap = Heap::new();
-        let global_env = envs.new_top_level();
 
         let sym_quote = syms.intern("quote");
         let sym_if = syms.intern("if");
@@ -79,7 +78,6 @@ impl Evaluator {
         let sym_letstar = syms.intern("let*");
         let sym_letrec = syms.intern("letrec");
         let sym_begin = syms.intern("begin");
-        let sym_set = syms.intern("set!");
         let sym_and = syms.intern("and");
         let sym_or = syms.intern("or");
         let sym_else = syms.intern("else");
@@ -96,8 +94,7 @@ impl Evaluator {
         let mut eval = Evaluator {
             heap,
             syms,
-            envs,
-            global_env,
+            globals: HashMap::new(),
             gc_threshold: 10000,
             alloc_since_gc: 0,
             extra_roots: Vec::new(),
@@ -114,7 +111,6 @@ impl Evaluator {
             sym_letstar,
             sym_letrec,
             sym_begin,
-            sym_set,
             sym_and,
             sym_or,
             sym_else,
@@ -136,7 +132,8 @@ impl Evaluator {
     fn maybe_gc(&mut self) {
         self.alloc_since_gc += 1;
         if self.alloc_since_gc >= self.gc_threshold {
-            let mut roots = self.envs.all_values();
+            let mut roots = Vec::new();
+            roots.extend(self.globals.values().copied());
             roots.extend_from_slice(&self.extra_roots);
             roots.extend_from_slice(&self.shadow_stack);
             roots.extend(self.macros.values().copied());
@@ -158,38 +155,42 @@ impl Evaluator {
     // ── Public eval entry ──
 
     pub fn eval(&mut self, expr: Val) -> Result<Val, String> {
-        self.eval_in(expr, self.global_env)
+        self.eval_in(expr, Val::nil())
     }
 
-    pub fn eval_in(&mut self, expr: Val, env_id: usize) -> Result<Val, String> {
+    pub fn eval_in(&mut self, expr: Val, env: Val) -> Result<Val, String> {
         // Trampoline loop for TCO
         let mut current_expr = expr;
-        let mut current_env = env_id;
+        let mut current_env = env;
         loop {
             match self.eval_inner(current_expr, current_env)? {
                 Trampoline::Done(val) => return Ok(val),
-                Trampoline::TailCall { expr, env_id } => {
+                Trampoline::TailCall { expr, env } => {
                     current_expr = expr;
-                    current_env = env_id;
+                    current_env = env;
                 }
             }
         }
     }
 
-    fn eval_inner(&mut self, expr: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_inner(&mut self, expr: Val, env: Val) -> Result<Trampoline, String> {
+        // Protect expr and env from GC BEFORE running maybe_gc.
+        // This is critical because env is a hash-consed alist on the heap,
+        // and freshly-built call envs from the trampoline loop may not be
+        // reachable from any other root.
+        self.shadow_stack.push(expr);
+        self.shadow_stack.push(env);
+
         self.maybe_gc();
 
-        // Protect the current expression (and all its sub-trees) from GC
-        // while we decompose and evaluate it.
-        self.shadow_stack.push(expr);
+        let result = self.eval_inner_impl(expr, env);
 
-        let result = self.eval_inner_impl(expr, env_id);
-
+        self.shadow_stack.pop();
         self.shadow_stack.pop();
         result
     }
 
-    fn eval_inner_impl(&mut self, expr: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_inner_impl(&mut self, expr: Val, env: Val) -> Result<Trampoline, String> {
         match expr.tag() {
             TAG_INT | TAG_BOOL | TAG_NIL | TAG_CHAR | TAG_BUILTIN | TAG_VOID => {
                 Ok(Trampoline::Done(expr))
@@ -197,15 +198,19 @@ impl Evaluator {
 
             TAG_SYMBOL => {
                 let sym_id = expr.payload() as u32;
-                match self.envs.get(env_id, sym_id) {
-                    Some(val) => Ok(Trampoline::Done(val)),
-                    None => Err(format!("unbound variable: {}", self.syms.name(sym_id))),
+                // Check local (hash-consed alist) env first, then fall back to globals
+                if let Some(val) = env::env_get(&self.heap, env, sym_id) {
+                    Ok(Trampoline::Done(val))
+                } else if let Some(&val) = self.globals.get(&sym_id) {
+                    Ok(Trampoline::Done(val))
+                } else {
+                    Err(format!("unbound variable: {}", self.syms.name(sym_id)))
                 }
             }
 
             TAG_HEAP => {
                 if self.heap.is_cons(expr) {
-                    return self.eval_cons(expr, env_id);
+                    return self.eval_cons(expr, env);
                 }
                 // Strings, vectors, closures are self-evaluating
                 Ok(Trampoline::Done(expr))
@@ -215,7 +220,7 @@ impl Evaluator {
         }
     }
 
-    fn eval_cons(&mut self, expr: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_cons(&mut self, expr: Val, env: Val) -> Result<Trampoline, String> {
         let car = self.heap.car(expr).unwrap();
         let cdr = self.heap.cdr(expr).unwrap();
 
@@ -225,63 +230,60 @@ impl Evaluator {
                 return self.eval_quote(cdr);
             }
             if sym_id == self.sym_if {
-                return self.eval_if(cdr, env_id);
+                return self.eval_if(cdr, env);
             }
             if sym_id == self.sym_cond {
-                return self.eval_cond(cdr, env_id);
+                return self.eval_cond(cdr, env);
             }
             if sym_id == self.sym_define {
-                return self.eval_define(cdr, env_id);
+                return self.eval_define(cdr, env);
             }
             if sym_id == self.sym_lambda {
-                return self.eval_lambda(cdr, env_id);
+                return self.eval_lambda(cdr, env);
             }
             if sym_id == self.sym_let {
-                return self.eval_let(cdr, env_id);
+                return self.eval_let(cdr, env);
             }
             if sym_id == self.sym_letstar {
-                return self.eval_let_star(cdr, env_id);
+                return self.eval_let_star(cdr, env);
             }
             if sym_id == self.sym_letrec {
-                return self.eval_letrec(cdr, env_id);
+                return self.eval_letrec(cdr, env);
             }
             if sym_id == self.sym_begin {
-                return self.eval_begin(cdr, env_id);
-            }
-            if sym_id == self.sym_set {
-                return self.eval_set(cdr, env_id);
+                return self.eval_begin(cdr, env);
             }
             if sym_id == self.sym_and {
-                return self.eval_and(cdr, env_id);
+                return self.eval_and(cdr, env);
             }
             if sym_id == self.sym_or {
-                return self.eval_or(cdr, env_id);
+                return self.eval_or(cdr, env);
             }
             if sym_id == self.sym_when {
-                return self.eval_when(cdr, env_id);
+                return self.eval_when(cdr, env);
             }
             if sym_id == self.sym_unless {
-                return self.eval_unless(cdr, env_id);
+                return self.eval_unless(cdr, env);
             }
             if sym_id == self.sym_quasiquote {
                 let template = self.heap.car(cdr).ok_or("quasiquote: expected argument")?;
-                let result = self.eval_quasiquote(template, env_id)?;
+                let result = self.eval_quasiquote(template, env)?;
                 return Ok(Trampoline::Done(result));
             }
             if sym_id == self.sym_define_macro {
-                return self.eval_define_macro(cdr, env_id);
+                return self.eval_define_macro(cdr, env);
             }
             if sym_id == self.sym_define_memo {
-                return self.eval_define_memo(cdr, env_id);
+                return self.eval_define_memo(cdr, env);
             }
             // Check for macro invocation
             if self.macros.contains_key(&sym_id) {
-                return self.eval_macro_call(sym_id, cdr, env_id);
+                return self.eval_macro_call(sym_id, cdr, env);
             }
         }
 
         // Regular application
-        self.eval_apply(car, cdr, env_id)
+        self.eval_apply(car, cdr, env)
     }
 
     // ── Special forms ──
@@ -291,17 +293,17 @@ impl Evaluator {
         Ok(Trampoline::Done(datum))
     }
 
-    fn eval_if(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_if(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let condition = self.heap.car(args).ok_or("if: expected condition")?;
         let rest = self.heap.cdr(args).ok_or("if: expected consequent")?;
         let consequent = self.heap.car(rest).ok_or("if: expected consequent")?;
         let alt_pair = self.heap.cdr(rest);
 
-        let cond_val = self.eval_in(condition, env_id)?;
+        let cond_val = self.eval_in(condition, env)?;
         if cond_val.is_truthy() {
             Ok(Trampoline::TailCall {
                 expr: consequent,
-                env_id,
+                env,
             })
         } else if let Some(alt_rest) = alt_pair {
             if alt_rest.is_nil() {
@@ -310,7 +312,7 @@ impl Evaluator {
                 let alternative = self.heap.car(alt_rest).ok_or("if: bad alternative")?;
                 Ok(Trampoline::TailCall {
                     expr: alternative,
-                    env_id,
+                    env,
                 })
             }
         } else {
@@ -318,7 +320,7 @@ impl Evaluator {
         }
     }
 
-    fn eval_cond(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_cond(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let clauses = self.heap.list_to_vec(args).ok_or("cond: expected list of clauses")?;
         for clause in &clauses {
             let parts = self.heap.list_to_vec(*clause).ok_or("cond: bad clause")?;
@@ -333,39 +335,39 @@ impl Evaluator {
                 }
                 // Evaluate all body exprs, tail-call the last
                 for i in 1..parts.len() - 1 {
-                    self.eval_in(parts[i], env_id)?;
+                    self.eval_in(parts[i], env)?;
                 }
                 return Ok(Trampoline::TailCall {
                     expr: *parts.last().unwrap(),
-                    env_id,
+                    env,
                 });
             }
-            let test_val = self.eval_in(test, env_id)?;
+            let test_val = self.eval_in(test, env)?;
             if test_val.is_truthy() {
                 if parts.len() == 1 {
                     return Ok(Trampoline::Done(test_val));
                 }
                 for i in 1..parts.len() - 1 {
-                    self.eval_in(parts[i], env_id)?;
+                    self.eval_in(parts[i], env)?;
                 }
                 return Ok(Trampoline::TailCall {
                     expr: *parts.last().unwrap(),
-                    env_id,
+                    env,
                 });
             }
         }
         Ok(Trampoline::Done(Val::void()))
     }
 
-    fn eval_define(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_define(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let first = self.heap.car(args).ok_or("define: expected name")?;
         let rest = self.heap.cdr(args).ok_or("define: expected value")?;
 
         // (define x expr)
         if let Some(sym_id) = first.as_symbol() {
             let val_expr = self.heap.car(rest).ok_or("define: expected value")?;
-            let val = self.eval_in(val_expr, env_id)?;
-            self.envs.define(env_id, sym_id, val);
+            let val = self.eval_in(val_expr, env)?;
+            self.globals.insert(sym_id, val);
             return Ok(Trampoline::Done(Val::void()));
         }
 
@@ -380,15 +382,15 @@ impl Evaluator {
             let lambda_sym = Val::symbol(self.sym_lambda);
             let lambda_args = self.heap.cons(params, rest);
             let lambda_expr = self.heap.cons(lambda_sym, lambda_args);
-            let val = self.eval_in(lambda_expr, env_id)?;
-            self.envs.define(env_id, sym_id, val);
+            let val = self.eval_in(lambda_expr, env)?;
+            self.globals.insert(sym_id, val);
             return Ok(Trampoline::Done(Val::void()));
         }
 
         Err("define: bad syntax".into())
     }
 
-    fn eval_lambda(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_lambda(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let params_form = self.heap.car(args).ok_or("lambda: expected params")?;
         let body = self.heap.cdr(args).ok_or("lambda: expected body")?;
 
@@ -407,7 +409,7 @@ impl Evaluator {
             }
         };
 
-        let closure = self.heap.alloc_closure(params, variadic, body_val, env_id);
+        let closure = self.heap.alloc_closure(params, variadic, body_val, env, None);
         Ok(Trampoline::Done(closure))
     }
 
@@ -446,7 +448,7 @@ impl Evaluator {
         }
     }
 
-    fn eval_let(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_let(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let first = self.heap.car(args).ok_or("let: expected bindings")?;
 
         // Named let: (let name ((var init) ...) body ...)
@@ -463,6 +465,7 @@ impl Evaluator {
             let mut param_names = Vec::new();
             let mut init_vals = Vec::new();
 
+            let ss_base = self.shadow_stack.len();
             for b in &bindings {
                 let pair = self.heap.list_to_vec(*b).ok_or("named let: bad binding")?;
                 if pair.len() != 2 {
@@ -471,10 +474,12 @@ impl Evaluator {
                 let sym_id = pair[0]
                     .as_symbol()
                     .ok_or("named let: variable must be a symbol")?;
-                let init = self.eval_in(pair[1], env_id)?;
+                let init = self.eval_in(pair[1], env)?;
+                self.shadow_stack.push(init);
                 param_names.push(sym_id);
                 init_vals.push(init);
             }
+            self.shadow_stack.truncate(ss_base);
 
             // Wrap body in begin
             let body_val = {
@@ -488,21 +493,21 @@ impl Evaluator {
                 }
             };
 
-            // Create closure and bind it in its own env
-            let loop_env = self.envs.new_child(env_id);
-            let closure =
-                self.heap
-                    .alloc_closure(param_names.clone(), None, body_val, loop_env);
-            self.envs.define(loop_env, name_sym, closure);
+            // Create closure capturing current env, with self_name so
+            // recursive calls can find it without polluting the globals table.
+            let closure = self.heap.alloc_closure(param_names.clone(), None, body_val, env, Some(name_sym));
+            self.shadow_stack.push(closure);
 
-            // Apply closure with initial values
-            let call_env = self.envs.new_child(loop_env);
+            // Build call env: bind the loop name first, then params
+            let mut call_env = env;
+            call_env = env::env_define(&mut self.heap, call_env, name_sym, closure);
             for (i, &sym) in param_names.iter().enumerate() {
-                self.envs.define(call_env, sym, init_vals[i]);
+                call_env = env::env_define(&mut self.heap, call_env, sym, init_vals[i]);
             }
+            self.shadow_stack.pop();
             return Ok(Trampoline::TailCall {
                 expr: body_val,
-                env_id: call_env,
+                env: call_env,
             });
         }
 
@@ -514,8 +519,9 @@ impl Evaluator {
             .list_to_vec(bindings_form)
             .ok_or("let: bindings must be a list")?;
 
-        let child_env = self.envs.new_child(env_id);
+        let mut child_env = env;
 
+        let ss_base = self.shadow_stack.len();
         for b in &bindings {
             let pair = self.heap.list_to_vec(*b).ok_or("let: bad binding")?;
             if pair.len() != 2 {
@@ -524,25 +530,29 @@ impl Evaluator {
             let sym_id = pair[0]
                 .as_symbol()
                 .ok_or("let: variable must be a symbol")?;
-            let val = self.eval_in(pair[1], env_id)?;
-            self.envs.define(child_env, sym_id, val);
+            let val = self.eval_in(pair[1], env)?;
+            child_env = env::env_define(&mut self.heap, child_env, sym_id, val);
+            self.shadow_stack.push(child_env);
         }
+        self.shadow_stack.truncate(ss_base);
 
-        // Eval body forms
+        // Eval body forms — protect child_env from GC during eval_in calls
         let body_parts = self.heap.list_to_vec(body).ok_or("let: body must be a list")?;
         if body_parts.is_empty() {
             return Err("let: empty body".into());
         }
+        self.shadow_stack.push(child_env);
         for i in 0..body_parts.len() - 1 {
             self.eval_in(body_parts[i], child_env)?;
         }
+        self.shadow_stack.pop();
         Ok(Trampoline::TailCall {
             expr: *body_parts.last().unwrap(),
-            env_id: child_env,
+            env: child_env,
         })
     }
 
-    fn eval_let_star(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_let_star(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let bindings_form = self.heap.car(args).ok_or("let*: expected bindings")?;
         let body = self.heap.cdr(args).ok_or("let*: expected body")?;
 
@@ -551,8 +561,9 @@ impl Evaluator {
             .list_to_vec(bindings_form)
             .ok_or("let*: bindings must be a list")?;
 
-        let child_env = self.envs.new_child(env_id);
+        let mut child_env = env;
 
+        let ss_base = self.shadow_stack.len();
         for b in &bindings {
             let pair = self.heap.list_to_vec(*b).ok_or("let*: bad binding")?;
             if pair.len() != 2 {
@@ -562,8 +573,10 @@ impl Evaluator {
                 .as_symbol()
                 .ok_or("let*: variable must be a symbol")?;
             let val = self.eval_in(pair[1], child_env)?;
-            self.envs.define(child_env, sym_id, val);
+            child_env = env::env_define(&mut self.heap, child_env, sym_id, val);
+            self.shadow_stack.push(child_env);
         }
+        self.shadow_stack.truncate(ss_base);
 
         let body_parts = self
             .heap
@@ -572,16 +585,18 @@ impl Evaluator {
         if body_parts.is_empty() {
             return Err("let*: empty body".into());
         }
+        self.shadow_stack.push(child_env);
         for i in 0..body_parts.len() - 1 {
             self.eval_in(body_parts[i], child_env)?;
         }
+        self.shadow_stack.pop();
         Ok(Trampoline::TailCall {
             expr: *body_parts.last().unwrap(),
-            env_id: child_env,
+            env: child_env,
         })
     }
 
-    fn eval_letrec(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_letrec(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let bindings_form = self.heap.car(args).ok_or("letrec: expected bindings")?;
         let body = self.heap.cdr(args).ok_or("letrec: expected body")?;
 
@@ -590,9 +605,8 @@ impl Evaluator {
             .list_to_vec(bindings_form)
             .ok_or("letrec: bindings must be a list")?;
 
-        let child_env = self.envs.new_child(env_id);
-
-        // First, define all vars as void
+        // First, define all vars as void in a child env
+        let mut child_env = env;
         let mut syms_list = Vec::new();
         let mut exprs_list = Vec::new();
         for b in &bindings {
@@ -605,14 +619,19 @@ impl Evaluator {
                 .ok_or("letrec: variable must be a symbol")?;
             syms_list.push(sym_id);
             exprs_list.push(pair[1]);
-            self.envs.define(child_env, sym_id, Val::void());
+            child_env = env::env_define(&mut self.heap, child_env, sym_id, Val::void());
         }
 
-        // Now evaluate and assign
+        // Now evaluate each init expression in child_env and re-define.
+        // Also register in globals so recursive closures can find each other.
+        let ss_base = self.shadow_stack.len();
         for (i, &sym_id) in syms_list.iter().enumerate() {
             let val = self.eval_in(exprs_list[i], child_env)?;
-            self.envs.define(child_env, sym_id, val);
+            child_env = env::env_define(&mut self.heap, child_env, sym_id, val);
+            self.globals.insert(sym_id, val);
+            self.shadow_stack.push(child_env);
         }
+        self.shadow_stack.truncate(ss_base);
 
         let body_parts = self
             .heap
@@ -621,16 +640,18 @@ impl Evaluator {
         if body_parts.is_empty() {
             return Err("letrec: empty body".into());
         }
+        self.shadow_stack.push(child_env);
         for i in 0..body_parts.len() - 1 {
             self.eval_in(body_parts[i], child_env)?;
         }
+        self.shadow_stack.pop();
         Ok(Trampoline::TailCall {
             expr: *body_parts.last().unwrap(),
-            env_id: child_env,
+            env: child_env,
         })
     }
 
-    fn eval_begin(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_begin(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let parts = self
             .heap
             .list_to_vec(args)
@@ -639,32 +660,15 @@ impl Evaluator {
             return Ok(Trampoline::Done(Val::void()));
         }
         for i in 0..parts.len() - 1 {
-            self.eval_in(parts[i], env_id)?;
+            self.eval_in(parts[i], env)?;
         }
         Ok(Trampoline::TailCall {
             expr: *parts.last().unwrap(),
-            env_id,
+            env,
         })
     }
 
-    fn eval_set(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
-        let name = self.heap.car(args).ok_or("set!: expected name")?;
-        let sym_id = name.as_symbol().ok_or("set!: name must be a symbol")?;
-        let val_expr = self
-            .heap
-            .car(self.heap.cdr(args).ok_or("set!: expected value")?)
-            .ok_or("set!: expected value")?;
-        let val = self.eval_in(val_expr, env_id)?;
-        if !self.envs.set(env_id, sym_id, val) {
-            return Err(format!(
-                "set!: unbound variable: {}",
-                self.syms.name(sym_id)
-            ));
-        }
-        Ok(Trampoline::Done(Val::void()))
-    }
-
-    fn eval_and(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_and(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         if args.is_nil() {
             return Ok(Trampoline::Done(Val::boolean(true)));
         }
@@ -673,18 +677,18 @@ impl Evaluator {
             .list_to_vec(args)
             .ok_or("and: expected list")?;
         for i in 0..parts.len() - 1 {
-            let val = self.eval_in(parts[i], env_id)?;
+            let val = self.eval_in(parts[i], env)?;
             if !val.is_truthy() {
                 return Ok(Trampoline::Done(val));
             }
         }
         Ok(Trampoline::TailCall {
             expr: *parts.last().unwrap(),
-            env_id,
+            env,
         })
     }
 
-    fn eval_or(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_or(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         if args.is_nil() {
             return Ok(Trampoline::Done(Val::boolean(false)));
         }
@@ -693,34 +697,34 @@ impl Evaluator {
             .list_to_vec(args)
             .ok_or("or: expected list")?;
         for i in 0..parts.len() - 1 {
-            let val = self.eval_in(parts[i], env_id)?;
+            let val = self.eval_in(parts[i], env)?;
             if val.is_truthy() {
                 return Ok(Trampoline::Done(val));
             }
         }
         Ok(Trampoline::TailCall {
             expr: *parts.last().unwrap(),
-            env_id,
+            env,
         })
     }
 
-    fn eval_when(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_when(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let condition = self.heap.car(args).ok_or("when: expected condition")?;
         let body = self.heap.cdr(args).ok_or("when: expected body")?;
-        let cond_val = self.eval_in(condition, env_id)?;
+        let cond_val = self.eval_in(condition, env)?;
         if cond_val.is_truthy() {
-            self.eval_begin(body, env_id)
+            self.eval_begin(body, env)
         } else {
             Ok(Trampoline::Done(Val::void()))
         }
     }
 
-    fn eval_unless(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_unless(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         let condition = self.heap.car(args).ok_or("unless: expected condition")?;
         let body = self.heap.cdr(args).ok_or("unless: expected body")?;
-        let cond_val = self.eval_in(condition, env_id)?;
+        let cond_val = self.eval_in(condition, env)?;
         if !cond_val.is_truthy() {
-            self.eval_begin(body, env_id)
+            self.eval_begin(body, env)
         } else {
             Ok(Trampoline::Done(Val::void()))
         }
@@ -728,7 +732,7 @@ impl Evaluator {
 
     // ── Quasiquote ──
 
-    fn eval_quasiquote(&mut self, template: Val, env_id: usize) -> Result<Val, String> {
+    fn eval_quasiquote(&mut self, template: Val, env: Val) -> Result<Val, String> {
         // If it's not a list/pair, return as-is (like quote)
         if !template.is_heap() || !self.heap.is_cons(template) {
             return Ok(template);
@@ -741,7 +745,7 @@ impl Evaluator {
         if let Some(sym_id) = car.as_symbol() {
             if sym_id == self.sym_unquote {
                 let expr = self.heap.car(cdr).ok_or("unquote: expected argument")?;
-                return self.eval_in(expr, env_id);
+                return self.eval_in(expr, env);
             }
         }
 
@@ -755,7 +759,7 @@ impl Evaluator {
                 if sym_id == self.sym_unquote {
                     let rest_cdr = self.heap.cdr(rest).unwrap_or(Val::nil());
                     let expr = self.heap.car(rest_cdr).ok_or("unquote: expected argument")?;
-                    let val = self.eval_in(expr, env_id)?;
+                    let val = self.eval_in(expr, env)?;
                     // This is the tail — build result with val as cdr
                     rest = val;
                     break;
@@ -772,7 +776,7 @@ impl Evaluator {
                     if sym_id == self.sym_unquote_splicing {
                         let splice_expr = self.heap.car(self.heap.cdr(item).unwrap_or(Val::nil()))
                             .ok_or("unquote-splicing: expected argument")?;
-                        let splice_val = self.eval_in(splice_expr, env_id)?;
+                        let splice_val = self.eval_in(splice_expr, env)?;
                         // splice_val should be a list; append its elements
                         let splice_elems = self.heap.list_to_vec(splice_val)
                             .ok_or("unquote-splicing: result must be a list")?;
@@ -788,7 +792,7 @@ impl Evaluator {
             }
 
             // Recursively process the element
-            let processed = self.eval_quasiquote(item, env_id)?;
+            let processed = self.eval_quasiquote(item, env)?;
             self.shadow_stack.push(processed);
             elems.push(processed);
         }
@@ -797,7 +801,7 @@ impl Evaluator {
         let tail = if rest.is_nil() {
             Val::nil()
         } else {
-            self.eval_quasiquote(rest, env_id)?
+            self.eval_quasiquote(rest, env)?
         };
         let mut result = tail;
         for v in elems.iter().rev() {
@@ -814,7 +818,7 @@ impl Evaluator {
 
     // ── Macros ──
 
-    fn eval_define_macro(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_define_macro(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         // (define-macro (name params...) body...)
         // or (define-macro name transformer-expr)
         let first = self.heap.car(args).ok_or("define-macro: expected name or (name params...)")?;
@@ -830,14 +834,14 @@ impl Evaluator {
             let lambda_sym = Val::symbol(self.sym_lambda);
             let inner = self.heap.cons(params_list, rest);
             let lambda_form = self.heap.cons(lambda_sym, inner);
-            let transformer = self.eval_in(lambda_form, env_id)?;
+            let transformer = self.eval_in(lambda_form, env)?;
             self.macros.insert(name_sym, transformer);
             Ok(Trampoline::Done(Val::void()))
         } else {
             // (define-macro name transformer-expr)
             let name_sym = first.as_symbol().ok_or("define-macro: name must be a symbol")?;
             let transformer_expr = self.heap.car(rest).ok_or("define-macro: expected transformer")?;
-            let transformer = self.eval_in(transformer_expr, env_id)?;
+            let transformer = self.eval_in(transformer_expr, env)?;
             self.macros.insert(name_sym, transformer);
             Ok(Trampoline::Done(Val::void()))
         }
@@ -845,7 +849,7 @@ impl Evaluator {
 
     // ── Memoized functions ──
 
-    fn eval_define_memo(&mut self, args: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_define_memo(&mut self, args: Val, env: Val) -> Result<Trampoline, String> {
         // (define-memo (name params...) body...)
         let first = self.heap.car(args).ok_or("define-memo: expected (name params...)")?;
         let rest = self.heap.cdr(args).ok_or("define-memo: expected body")?;
@@ -859,18 +863,18 @@ impl Evaluator {
             let lambda_sym = Val::symbol(self.sym_lambda);
             let lambda_args = self.heap.cons(params, rest);
             let lambda_expr = self.heap.cons(lambda_sym, lambda_args);
-            let closure = self.eval_in(lambda_expr, env_id)?;
+            let closure = self.eval_in(lambda_expr, env)?;
 
             // Register memo table for this closure
             self.memo_tables.insert(closure, HashMap::new());
-            self.envs.define(env_id, sym_id, closure);
+            self.globals.insert(sym_id, closure);
             Ok(Trampoline::Done(Val::void()))
         } else {
             Err("define-memo: expected (name params...) form".into())
         }
     }
 
-    fn eval_macro_call(&mut self, macro_sym: u32, args_list: Val, env_id: usize) -> Result<Trampoline, String> {
+    fn eval_macro_call(&mut self, macro_sym: u32, args_list: Val, env: Val) -> Result<Trampoline, String> {
         let transformer = *self.macros.get(&macro_sym).unwrap();
         // Pass unevaluated arguments to the transformer
         let arg_vals = self.heap.list_to_vec(args_list)
@@ -879,10 +883,10 @@ impl Evaluator {
         // Evaluate the expanded form
         let expanded_val = match expanded {
             Trampoline::Done(v) => v,
-            Trampoline::TailCall { expr, env_id: e } => self.eval_in(expr, e)?,
+            Trampoline::TailCall { expr, env: e } => self.eval_in(expr, e)?,
         };
         // Evaluate the macro-expanded code in the caller's environment (tail position)
-        Ok(Trampoline::TailCall { expr: expanded_val, env_id })
+        Ok(Trampoline::TailCall { expr: expanded_val, env })
     }
 
     // ── Application ──
@@ -891,9 +895,9 @@ impl Evaluator {
         &mut self,
         func_expr: Val,
         args_list: Val,
-        env_id: usize,
+        env: Val,
     ) -> Result<Trampoline, String> {
-        let func = self.eval_in(func_expr, env_id)?;
+        let func = self.eval_in(func_expr, env)?;
         self.shadow_stack.push(func);
 
         // Evaluate arguments
@@ -906,14 +910,14 @@ impl Evaluator {
         if let Some(sym_id) = func_expr.as_symbol() {
             if sym_id == self.sym_apply {
                 self.shadow_stack.pop();
-                return self.eval_apply_builtin(&arg_exprs, env_id);
+                return self.eval_apply_builtin(&arg_exprs, env);
             }
         }
 
         let ss_base = self.shadow_stack.len();
         let mut arg_vals = Vec::with_capacity(arg_exprs.len());
         for expr in &arg_exprs {
-            let v = self.eval_in(*expr, env_id)?;
+            let v = self.eval_in(*expr, env)?;
             self.shadow_stack.push(v);
             arg_vals.push(v);
         }
@@ -926,14 +930,14 @@ impl Evaluator {
     fn eval_apply_builtin(
         &mut self,
         arg_exprs: &[Val],
-        env_id: usize,
+        env: Val,
     ) -> Result<Trampoline, String> {
         if arg_exprs.len() != 2 {
             return Err("apply: expected (apply func args-list)".into());
         }
-        let func = self.eval_in(arg_exprs[0], env_id)?;
+        let func = self.eval_in(arg_exprs[0], env)?;
         self.shadow_stack.push(func);
-        let args_list_val = self.eval_in(arg_exprs[1], env_id)?;
+        let args_list_val = self.eval_in(arg_exprs[1], env)?;
         self.shadow_stack.pop();
         let arg_vals = self
             .heap
@@ -973,7 +977,7 @@ impl Evaluator {
             let trampoline = self.apply_closure(func, arg_vals)?;
             let result = match trampoline {
                 Trampoline::Done(v) => v,
-                Trampoline::TailCall { expr, env_id } => self.eval_in(expr, env_id)?,
+                Trampoline::TailCall { expr, env } => self.eval_in(expr, env)?,
             };
             self.shadow_stack.pop();
             self.memo_tables.get_mut(&func).unwrap().insert(key, result);
@@ -986,9 +990,15 @@ impl Evaluator {
 
     /// Apply a closure (shared logic for memoized and regular calls)
     fn apply_closure(&mut self, func: Val, arg_vals: Vec<Val>) -> Result<Trampoline, String> {
-        if let Some((params, variadic, body, closure_env)) = self.heap.get_closure(func) {
+        if let Some((params, variadic, body, closure_env, self_name)) = self.heap.get_closure(func) {
             let params = params.to_vec();
-            let call_env = self.envs.new_child(closure_env);
+            let mut call_env = closure_env;
+
+            // If the closure has a self_name (e.g. from named let),
+            // bind itself in the call env so recursive calls work.
+            if let Some(name) = self_name {
+                call_env = env::env_define(&mut self.heap, call_env, name, func);
+            }
 
             if let Some(rest_param) = variadic {
                 if arg_vals.len() < params.len() {
@@ -999,10 +1009,10 @@ impl Evaluator {
                     ));
                 }
                 for (i, &sym) in params.iter().enumerate() {
-                    self.envs.define(call_env, sym, arg_vals[i]);
+                    call_env = env::env_define(&mut self.heap, call_env, sym, arg_vals[i]);
                 }
                 let rest = self.heap.list(&arg_vals[params.len()..]);
-                self.envs.define(call_env, rest_param, rest);
+                call_env = env::env_define(&mut self.heap, call_env, rest_param, rest);
             } else {
                 if arg_vals.len() != params.len() {
                     return Err(format!(
@@ -1012,13 +1022,13 @@ impl Evaluator {
                     ));
                 }
                 for (i, &sym) in params.iter().enumerate() {
-                    self.envs.define(call_env, sym, arg_vals[i]);
+                    call_env = env::env_define(&mut self.heap, call_env, sym, arg_vals[i]);
                 }
             }
 
             return Ok(Trampoline::TailCall {
                 expr: body,
-                env_id: call_env,
+                env: call_env,
             });
         }
 
@@ -1117,10 +1127,9 @@ impl Evaluator {
             ("macroexpand", 84),
         ];
 
-        let env = self.global_env;
         for (name, id) in builtins {
             let sym = self.syms.intern(name);
-            self.envs.define(env, sym, Val::builtin(id));
+            self.globals.insert(sym, Val::builtin(id));
         }
 
         // Also define 'apply' as a symbol the evaluator recognizes
@@ -1401,8 +1410,8 @@ impl Evaluator {
                     let r = self.apply_func(func, vec![*e])?;
                     let v = match r {
                         Trampoline::Done(v) => v,
-                        Trampoline::TailCall { expr, env_id } => {
-                            self.eval_in(expr, env_id)?
+                        Trampoline::TailCall { expr, env } => {
+                            self.eval_in(expr, env)?
                         }
                     };
                     self.shadow_stack.push(v);
@@ -1422,7 +1431,7 @@ impl Evaluator {
                     let r = self.apply_func(func, vec![*e])?;
                     let v = match r {
                         Trampoline::Done(v) => v,
-                        Trampoline::TailCall { expr, env_id } => self.eval_in(expr, env_id)?,
+                        Trampoline::TailCall { expr, env } => self.eval_in(expr, env)?,
                     };
                     if v.is_truthy() {
                         results.push(*e);
@@ -1440,7 +1449,7 @@ impl Evaluator {
                     let r = self.apply_func(func, vec![*e, acc])?;
                     acc = match r {
                         Trampoline::Done(v) => v,
-                        Trampoline::TailCall { expr, env_id } => self.eval_in(expr, env_id)?,
+                        Trampoline::TailCall { expr, env } => self.eval_in(expr, env)?,
                     };
                 }
                 Ok(acc)
@@ -1454,8 +1463,8 @@ impl Evaluator {
                     let r = self.apply_func(func, vec![*e])?;
                     match r {
                         Trampoline::Done(_) => {}
-                        Trampoline::TailCall { expr, env_id } => {
-                            self.eval_in(expr, env_id)?;
+                        Trampoline::TailCall { expr, env } => {
+                            self.eval_in(expr, env)?;
                         }
                     }
                 }
@@ -1528,7 +1537,8 @@ impl Evaluator {
             56 => Ok(Val::int(self.heap.len() as i64)),
             57 => {
                 // gc — force garbage collection
-                let mut roots = self.envs.all_values();
+                let mut roots = Vec::new();
+                roots.extend(self.globals.values().copied());
                 roots.extend_from_slice(&self.extra_roots);
                 roots.extend_from_slice(&self.shadow_stack);
                 roots.extend(self.macros.values().copied());
@@ -1594,7 +1604,7 @@ impl Evaluator {
                 let r = self.apply_func(func, arg_vals)?;
                 match r {
                     Trampoline::Done(v) => Ok(v),
-                    Trampoline::TailCall { expr, env_id } => self.eval_in(expr, env_id),
+                    Trampoline::TailCall { expr, env } => self.eval_in(expr, env),
                 }
             }
             66 => Ok(Val::boolean(
@@ -1754,7 +1764,7 @@ impl Evaluator {
                             let expanded = self.apply_func(transformer, arg_vals)?;
                             return match expanded {
                                 Trampoline::Done(v) => Ok(v),
-                                Trampoline::TailCall { expr, env_id } => self.eval_in(expr, env_id),
+                                Trampoline::TailCall { expr, env } => self.eval_in(expr, env),
                             };
                         }
                     }

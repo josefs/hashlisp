@@ -89,7 +89,7 @@
 (define *grammar-table* '())
 
 (define (define-grammar! name g)
-  (set! *grammar-table* (cons (cons name g) *grammar-table*)))
+  (define *grammar-table* (cons (cons name g) *grammar-table*)))
 
 (define (lookup-grammar name)
   (let ((entry (assq name *grammar-table*)))
@@ -103,7 +103,7 @@
 (define *nullable-ref-seen* '())
 
 (define (nullable? g)
-  (set! *nullable-ref-seen* '())
+  (define *nullable-ref-seen* '())
   (nullable-walk g))
 
 (define (nullable-walk g)
@@ -136,7 +136,7 @@
             (if (memq name *nullable-ref-seen*)
                 #f
                 (begin
-                  (set! *nullable-ref-seen*
+                  (define *nullable-ref-seen*
                         (cons name *nullable-ref-seen*))
                   (nullable-walk (lookup-grammar name))))))
          ((eq? tag 'empty) #f)
@@ -170,7 +170,7 @@
 (define *deriv-ref-cache* '())
 
 (define (derive g token)
-  (set! *deriv-ref-cache* '())
+  (define *deriv-ref-cache* '())
   (derive-walk g token))
 
 (define (derive-walk g token)
@@ -212,7 +212,7 @@
            (empty)
            (begin
              ;; Mark as in-progress
-             (set! *deriv-ref-cache*
+             (define *deriv-ref-cache*
                    (cons (cons name #t) *deriv-ref-cache*))
              (derive-walk (lookup-grammar name) token)))))
 

@@ -67,17 +67,17 @@
 (define *dag-visited* '())
 
 (define (dag-size expr)
-  (set! *dag-visited* '())
+  (define *dag-visited* '())
   (dag-size-walk expr))
 
 (define (dag-size-walk expr)
   (cond
     ((memq expr *dag-visited*) 0)
     ((pair? expr)
-     (set! *dag-visited* (cons expr *dag-visited*))
+     (define *dag-visited* (cons expr *dag-visited*))
      (+ 1 (dag-size-walk (cadr expr)) (dag-size-walk (caddr expr))))
     (else
-     (set! *dag-visited* (cons expr *dag-visited*))
+     (define *dag-visited* (cons expr *dag-visited*))
      1)))
 
 ;;; ── Find Shared Subexpressions ───────────────────────────────────
@@ -91,9 +91,9 @@
     (cond
       ((memq expr *visited*)
        (unless (memq expr *shared*)
-         (set! *shared* (cons expr *shared*))))
+         (define *shared* (cons expr *shared*))))
       (else
-       (set! *visited* (cons expr *visited*))
+       (define *visited* (cons expr *visited*))
        (find-shared! (cadr expr))
        (find-shared! (caddr expr))))))
 
@@ -107,12 +107,12 @@
 
 (define (let-insert expr)
   ;; Phase 1: identify shared nodes
-  (set! *visited* '())
-  (set! *shared* '())
+  (define *visited* '())
+  (define *shared* '())
   (find-shared! expr)
   ;; Phase 2: walk and emit let-bindings
-  (set! *names* '())
-  (set! *bindings* '())
+  (define *names* '())
+  (define *bindings* '())
   (let ((body (li-walk expr)))
     (if (null? *bindings*)
         body
@@ -133,8 +133,8 @@
              (if (memq expr *shared*)
                  ;; Shared → bind to a fresh variable
                  (let ((name (gensym)))
-                   (set! *names* (cons (cons expr name) *names*))
-                   (set! *bindings* (cons (list name form) *bindings*))
+                   (define *names* (cons (cons expr name) *names*))
+                   (define *bindings* (cons (list name form) *bindings*))
                    name)
                  ;; Unique → inline
                  form)))))))

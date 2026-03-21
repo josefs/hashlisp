@@ -8,8 +8,11 @@
 ///! Hash computation:
 ///!   cons(a, b)  → mix(a.0, b.0, SALT_CONS)
 ///!   string(s)   → fnv1a(bytes(s)) ⊕ SALT_STRING
-///!   closure     → monotonic id (closures are never shared)
+///!   closure     → mix of param hashes, body hash, env hash ⊕ SALT_CLOSURE
 ///!   vector      → mix of element hashes ⊕ SALT_VECTOR
+///!
+///! Closures capture their environment as a hash-consed alist (a Val),
+///! so structurally identical closures are automatically shared.
 ///!
 ///! Garbage collection: mark-and-sweep from a set of root Val's.
 
@@ -51,12 +54,15 @@ pub enum HeapObject {
     Cons(Val, Val),
     /// Immutable string
     Str(String),
-    /// Closure: (param_names as symbol ids, body as Val (list), captured env id)
+    /// Closure: (param_names as symbol ids, body as Val, captured env as hash-consed alist)
     Closure {
         params: Vec<u32>,
         variadic: Option<u32>,
         body: Val,
-        env_id: usize,
+        env: Val,
+        /// If Some, this closure binds itself under this name in every call
+        /// (used by named let for recursion without mutating the env).
+        self_name: Option<u32>,
     },
     /// Vector of values
     Vector(Vec<Val>),
@@ -71,15 +77,12 @@ struct HeapEntry {
 pub struct Heap {
     /// hash → entry (uses identity hasher since keys are already hashed)
     table: PreHashedMap<HeapEntry>,
-    /// Monotonic counter for things that must be unique (closures)
-    next_unique: u64,
 }
 
 impl Heap {
     pub fn new() -> Self {
         Heap {
             table: PreHashedMap::default(),
-            next_unique: 1,
         }
     }
 
@@ -117,12 +120,6 @@ impl Heap {
         h ^= salt;
         h = h.wrapping_mul(0x100000001b3);
         h & PAYLOAD_MASK
-    }
-
-    fn unique_hash(&mut self, salt: u64) -> u64 {
-        let id = self.next_unique;
-        self.next_unique += 1;
-        Self::mix(id, 0, salt)
     }
 
     // ── Allocation ──
@@ -224,15 +221,57 @@ impl Heap {
         panic!("heap: too many hash collisions for string");
     }
 
-    /// Allocate a closure. Not hash-consed (each closure captures a unique env).
+    /// Allocate a closure. Hash-consed: identical (params, variadic, body, env) → same hash.
     pub fn alloc_closure(
         &mut self,
         params: Vec<u32>,
         variadic: Option<u32>,
         body: Val,
-        env_id: usize,
+        env: Val,
+        self_name: Option<u32>,
     ) -> Val {
-        let hash = self.unique_hash(SALT_CLOSURE);
+        // Build a deterministic hash from all closure fields
+        let mut h = 0xcbf29ce484222325u64;
+        for &p in &params {
+            h ^= p as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        // Encode variadic presence + value
+        h ^= match variadic {
+            Some(v) => (v as u64) | (1u64 << 32),
+            None => 0,
+        };
+        h = h.wrapping_mul(0x100000001b3);
+        h ^= body.0;
+        h = h.wrapping_mul(0x100000001b3);
+        h ^= env.0;
+        h = h.wrapping_mul(0x100000001b3);
+        // Encode self_name
+        h ^= match self_name {
+            Some(s) => (s as u64) | (1u64 << 33),
+            None => 0,
+        };
+        h = h.wrapping_mul(0x100000001b3);
+        h ^= SALT_CLOSURE;
+        h = h.wrapping_mul(0x100000001b3);
+        let hash = h & PAYLOAD_MASK;
+
+        if let Some(entry) = self.table.get(&hash) {
+            if let HeapObject::Closure {
+                params: ref ep,
+                variadic: ev,
+                body: eb,
+                env: ee,
+                self_name: esn,
+            } = entry.obj
+            {
+                if *ep == params && ev == variadic && eb == body && ee == env && esn == self_name {
+                    return Val::heap_ref(hash);
+                }
+            }
+            // Collision — linear probe
+            return self.closure_probe(params, variadic, body, env, self_name, hash);
+        }
         self.table.insert(
             hash,
             HeapEntry {
@@ -240,12 +279,60 @@ impl Heap {
                     params,
                     variadic,
                     body,
-                    env_id,
+                    env,
+                    self_name,
                 },
                 marked: false,
             },
         );
         Val::heap_ref(hash)
+    }
+
+    fn closure_probe(
+        &mut self,
+        params: Vec<u32>,
+        variadic: Option<u32>,
+        body: Val,
+        env: Val,
+        self_name: Option<u32>,
+        base: u64,
+    ) -> Val {
+        for i in 1..1000 {
+            let h = (base.wrapping_add(i)) & PAYLOAD_MASK;
+            match self.table.get(&h) {
+                Some(entry) => {
+                    if let HeapObject::Closure {
+                        params: ref ep,
+                        variadic: ev,
+                        body: eb,
+                        env: ee,
+                        self_name: esn,
+                    } = entry.obj
+                    {
+                        if *ep == params && ev == variadic && eb == body && ee == env && esn == self_name {
+                            return Val::heap_ref(h);
+                        }
+                    }
+                }
+                None => {
+                    self.table.insert(
+                        h,
+                        HeapEntry {
+                            obj: HeapObject::Closure {
+                                params,
+                                variadic,
+                                body,
+                                env,
+                                self_name,
+                            },
+                            marked: false,
+                        },
+                    );
+                    return Val::heap_ref(h);
+                }
+            }
+        }
+        panic!("heap: too many hash collisions for closure");
     }
 
     /// Allocate a vector. Hash-consed by elements.
@@ -257,16 +344,8 @@ impl Heap {
                     return Val::heap_ref(hash);
                 }
             }
-            // collision — use unique to avoid complexity
-            let h2 = self.unique_hash(SALT_VECTOR);
-            self.table.insert(
-                h2,
-                HeapEntry {
-                    obj: HeapObject::Vector(elems),
-                    marked: false,
-                },
-            );
-            return Val::heap_ref(h2);
+            // collision — linear probe
+            return self.vector_probe(elems, hash);
         }
         self.table.insert(
             hash,
@@ -276,6 +355,32 @@ impl Heap {
             },
         );
         Val::heap_ref(hash)
+    }
+
+    fn vector_probe(&mut self, elems: Vec<Val>, base: u64) -> Val {
+        for i in 1..1000 {
+            let h = (base.wrapping_add(i)) & PAYLOAD_MASK;
+            match self.table.get(&h) {
+                Some(entry) => {
+                    if let HeapObject::Vector(existing) = &entry.obj {
+                        if *existing == elems {
+                            return Val::heap_ref(h);
+                        }
+                    }
+                }
+                None => {
+                    self.table.insert(
+                        h,
+                        HeapEntry {
+                            obj: HeapObject::Vector(elems),
+                            marked: false,
+                        },
+                    );
+                    return Val::heap_ref(h);
+                }
+            }
+        }
+        panic!("heap: too many hash collisions for vector");
     }
 
     // ── Access ──
@@ -308,15 +413,16 @@ impl Heap {
         }
     }
 
-    pub fn get_closure(&self, val: Val) -> Option<(&[u32], Option<u32>, Val, usize)> {
+    pub fn get_closure(&self, val: Val) -> Option<(&[u32], Option<u32>, Val, Val, Option<u32>)> {
         let h = val.as_heap_ref()?;
         match self.get(h)? {
             HeapObject::Closure {
                 params,
                 variadic,
                 body,
-                env_id,
-            } => Some((params, *variadic, *body, *env_id)),
+                env,
+                self_name,
+            } => Some((params, *variadic, *body, *env, *self_name)),
             _ => None,
         }
     }
@@ -377,7 +483,7 @@ impl Heap {
                 let children: Vec<Val> = match &entry.obj {
                     HeapObject::Cons(a, b) => vec![*a, *b],
                     HeapObject::Str(_) => vec![],
-                    HeapObject::Closure { body, .. } => vec![*body],
+                    HeapObject::Closure { body, env, .. } => vec![*body, *env],
                     HeapObject::Vector(v) => v.clone(),
                 };
                 for child in children {

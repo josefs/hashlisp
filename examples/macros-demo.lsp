@@ -35,33 +35,28 @@
   (display "yes") (newline))
 (display "(nothing)") (newline)
 
-;; 'swap!' macro using gensym for hygiene
-(define-macro (swap! a b)
-  (let ((tmp (gensym)))
-    `(let ((,tmp ,a))
-       (set! ,a ,b)
-       (set! ,b ,tmp))))
+;; 'my-or' macro using gensym for hygiene (avoids double evaluation)
+(define-macro (my-or . exprs)
+  (if (null? exprs) #f
+      (let ((tmp (gensym)))
+        `(let ((,tmp ,(car exprs)))
+           (if ,tmp ,tmp (my-or ,@(cdr exprs)))))))
 
-(define p 10)
-(define q 20)
-(display "Before swap: p=") (display p) (display " q=") (display q) (newline)
-(swap! p q)
-(display "After swap:  p=") (display p) (display " q=") (display q) (newline)
+(display "my-or: ") (display (my-or #f #f 42 99)) (newline)
+(display "my-or all false: ") (display (my-or #f #f #f)) (newline)
 
 (newline)
 
-;; 'while' macro
-(define-macro (while test . body)
-  `(let loop ()
-     (when ,test
+;; 'do-times' macro — loop n times with a counter variable
+(define-macro (do-times var n . body)
+  `(let loop ((,var 0))
+     (when (< ,var ,n)
        ,@body
-       (loop))))
+       (loop (+ ,var 1)))))
 
-(define i 0)
-(display "while loop: ")
-(while (< i 5)
-  (display i) (display " ")
-  (set! i (+ i 1)))
+(display "do-times: ")
+(do-times i 5
+  (display i) (display " "))
 (newline)
 
 ;; 'and-let*' -- anaphoric let

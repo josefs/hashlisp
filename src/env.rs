@@ -1,84 +1,37 @@
 ///! Environments for Hashlisp.
 ///!
-///! An environment is a mapping from symbol ids to Vals, with a parent chain.
-///! Environments are stored in a Vec (arena) and referenced by index.
+///! An environment is a hash-consed association list (alist) stored on the heap.
+///! Each binding is a cons cell `(symbol . value)`, and the environment is a
+///! chain: `((sym1 . val1) (sym2 . val2) ... . parent-env)`.
+///!
+///! Because environments are built from cons cells on the hash-consed heap,
+///! two environments with identical bindings are automatically shared (eq?).
+///! This enables closures themselves to be hash-consed.
 
-use std::collections::HashMap;
-
+use crate::heap::Heap;
 use crate::value::Val;
 
-struct Env {
-    bindings: HashMap<u32, Val>,
-    parent: Option<usize>,
+/// Look up a symbol in a hash-consed alist environment.
+/// Walks the list until it finds a matching symbol binding.
+pub fn env_get(heap: &Heap, env: Val, sym: u32) -> Option<Val> {
+    let sym_val = Val::symbol(sym);
+    let mut current = env;
+    while !current.is_nil() {
+        let pair = heap.car(current)?;
+        let key = heap.car(pair)?;
+        if key == sym_val {
+            return heap.cdr(pair);
+        }
+        current = heap.cdr(current)?;
+    }
+    None
 }
 
-pub struct EnvStore {
-    envs: Vec<Env>,
+/// Define (or shadow) a binding in an environment.
+/// Returns a new environment with the binding prepended.
+pub fn env_define(heap: &mut Heap, env: Val, sym: u32, val: Val) -> Val {
+    let sym_val = Val::symbol(sym);
+    let binding = heap.cons(sym_val, val);
+    heap.cons(binding, env)
 }
 
-impl EnvStore {
-    pub fn new() -> Self {
-        EnvStore { envs: Vec::new() }
-    }
-
-    /// Create a new empty top-level environment.
-    pub fn new_top_level(&mut self) -> usize {
-        let id = self.envs.len();
-        self.envs.push(Env {
-            bindings: HashMap::new(),
-            parent: None,
-        });
-        id
-    }
-
-    /// Create a child environment.
-    pub fn new_child(&mut self, parent: usize) -> usize {
-        let id = self.envs.len();
-        self.envs.push(Env {
-            bindings: HashMap::new(),
-            parent: Some(parent),
-        });
-        id
-    }
-
-    /// Define a binding in the given environment.
-    pub fn define(&mut self, env_id: usize, sym: u32, val: Val) {
-        self.envs[env_id].bindings.insert(sym, val);
-    }
-
-    /// Set an existing binding (walks up parent chain).
-    pub fn set(&mut self, env_id: usize, sym: u32, val: Val) -> bool {
-        if self.envs[env_id].bindings.contains_key(&sym) {
-            self.envs[env_id].bindings.insert(sym, val);
-            return true;
-        }
-        if let Some(parent) = self.envs[env_id].parent {
-            self.set(parent, sym, val)
-        } else {
-            false
-        }
-    }
-
-    /// Look up a binding (walks up parent chain).
-    pub fn get(&self, env_id: usize, sym: u32) -> Option<Val> {
-        if let Some(&val) = self.envs[env_id].bindings.get(&sym) {
-            return Some(val);
-        }
-        if let Some(parent) = self.envs[env_id].parent {
-            self.get(parent, sym)
-        } else {
-            None
-        }
-    }
-
-    /// Collect all values reachable from an environment (for GC roots).
-    pub fn all_values(&self) -> Vec<Val> {
-        let mut vals = Vec::new();
-        for env in &self.envs {
-            for &v in env.bindings.values() {
-                vals.push(v);
-            }
-        }
-        vals
-    }
-}

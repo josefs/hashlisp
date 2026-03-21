@@ -236,23 +236,17 @@
 
 ;; Gather all unique candidate positions (alive cells + their neighbors)
 (define (gather-candidates cells)
-  (let ((result '()))
-    (for-each
-      (lambda (cell)
-        (let ((cx (car cell)) (cy (cdr cell)))
-          (let dxloop ((dx -1))
-            (if (> dx 1) 'done
-                (begin
-                  (let dyloop ((dy -1))
-                    (if (> dy 1) 'done
-                        (begin
-                          (let ((nx (+ cx dx)) (ny (+ cy dy)))
-                            (if (not (cell-member? nx ny result))
-                                (set! result (cons (cons nx ny) result))))
-                          (dyloop (+ dy 1)))))
-                  (dxloop (+ dx 1)))))))
-      cells)
-    result))
+  (define (add-neighbors cell result)
+    (let ((cx (car cell)) (cy (cdr cell)))
+      (let dxloop ((dx -1) (res result))
+        (if (> dx 1) res
+            (let dyloop ((dy -1) (r res))
+              (if (> dy 1) (dxloop (+ dx 1) r)
+                  (let ((nx (+ cx dx)) (ny (+ cy dy)))
+                    (dyloop (+ dy 1)
+                            (if (cell-member? nx ny r) r
+                                (cons (cons nx ny) r))))))))))
+  (fold add-neighbors '() cells))
 
 ;;; ── Multi-step: advance by a specific power-of-2 ────────────────
 ;;;
@@ -381,22 +375,21 @@
   (let ((level (node-level node))
         (size (expt 2 (node-level node)))
         (half (expt 2 (- (node-level node) 1))))
-    (let ((cells '()))
-      (define (walk n lev ox oy)
-        (cond
-          ((= lev 0)
-           (if (= n alive)
-               (set! cells (cons (cons (- ox half) (- oy half)) cells))))
-          ((= 0 (node-population n))
-           'skip)
-          (else
-           (let ((h (expt 2 (- lev 1))))
-             (walk (node-nw n) (- lev 1) ox oy)
-             (walk (node-ne n) (- lev 1) (+ ox h) oy)
-             (walk (node-sw n) (- lev 1) ox (+ oy h))
-             (walk (node-se n) (- lev 1) (+ ox h) (+ oy h))))))
-      (walk node level 0 0)
-      cells)))
+    (define (walk n lev ox oy acc)
+      (cond
+        ((= lev 0)
+         (if (= n alive)
+             (cons (cons (- ox half) (- oy half)) acc)
+             acc))
+        ((= 0 (node-population n))
+         acc)
+        (else
+         (let ((h (expt 2 (- lev 1))))
+           (let* ((a1 (walk (node-nw n) (- lev 1) ox oy acc))
+                  (a2 (walk (node-ne n) (- lev 1) (+ ox h) oy a1))
+                  (a3 (walk (node-sw n) (- lev 1) ox (+ oy h) a2)))
+             (walk (node-se n) (- lev 1) (+ ox h) (+ oy h) a3))))))
+    (walk node level 0 0 '())))
 
 ;;; ── Display a region as ASCII ────────────────────────────────────
 

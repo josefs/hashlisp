@@ -51,7 +51,7 @@ leaves 61 bits of payload for hashes.
 ### Special Forms
 
 `define`, `lambda`, `if`, `cond`, `let`, `let*`, `letrec`, `begin`,
-`set!`, `and`, `or`, `when`, `unless`, `quote`, `quasiquote`,
+`and`, `or`, `when`, `unless`, `quote`, `quasiquote`,
 `define-macro`, `define-memo`, `apply`
 
 ### Builtins (83)
@@ -125,13 +125,13 @@ Each file is relatively well documented.
 | `parser.rs` | S-expression lexer and parser |
 | `eval.rs` | Tree-walking evaluator with tail-call optimization |
 | `printer.rs` | Value pretty-printer |
-| `env.rs` | Environment frames with parent chain |
+| `env.rs` | Hash-consed environment alists (immutable, enabling closure sharing) |
 
 ### Garbage Collection
 
 Mark-and-sweep with roots from:
-- The environment chain
-- The shadow stack (protects intermediate values during builtin calls)
+- The global bindings table
+- The shadow stack (protects intermediate values during evaluation)
 - Extra roots (parsed AST nodes)
 - Macro definitions
 - `define-memo` cache tables
@@ -140,8 +140,11 @@ Mark-and-sweep with roots from:
 
 FNV-1a with per-type salts (`SALT_CONS`, `SALT_STRING`, `SALT_VECTOR`,
 `SALT_CLOSURE`) folded into a 61-bit payload that fits the tagged word.
-Closures get monotonic IDs (they capture mutable environments, so they
-can't be shared by structure).
+Closures are hash-consed like all other heap objects — structurally
+identical closures (same params, body, captured environment) share a
+single heap slot.  This is possible because environments are immutable
+(no `set!`).  See [docs/closures-and-mutability.md](docs/closures-and-mutability.md)
+for design details.
 
 ## History
 

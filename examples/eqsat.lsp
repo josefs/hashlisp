@@ -38,7 +38,7 @@
 
 ;;; ── E-graph state ────────────────────────────────────────────────
 ;;;
-;;; The e-graph is stored in global variables (mutated via set!):
+;;; The e-graph is stored in global variables (mutated via define):
 ;;;   *eg-parent*   — union-find: alist of (id . parent-id)
 ;;;   *eg-classes*  — alist of (id . list-of-enodes)
 ;;;   *eg-memo*     — hashcons: alist of (enode . class-id), uses eq?
@@ -53,11 +53,11 @@
 
 ;; Reset the e-graph
 (define (eg-reset!)
-  (set! *eg-parent* '())
-  (set! *eg-classes* '())
-  (set! *eg-memo* '())
-  (set! *eg-next-id* 0)
-  (set! *eg-pending* '()))
+  (define *eg-parent* '())
+  (define *eg-classes* '())
+  (define *eg-memo* '())
+  (define *eg-next-id* 0)
+  (define *eg-pending* '()))
 
 ;;; ── E-node representation ────────────────────────────────────────
 ;;;
@@ -88,7 +88,7 @@
     (if (= parent id) id
         (let ((root (eg-find parent)))
           ;; Path compression
-          (set! *eg-parent* (alist-set id root *eg-parent*))
+          (define *eg-parent* (alist-set id root *eg-parent*))
           root))))
 
 ;;; ── Hashcons lookup ──────────────────────────────────────────────
@@ -135,10 +135,10 @@
 ;; Internal: create a fresh e-class containing one e-node
 (define (eg-make-class enode)
   (let ((id *eg-next-id*))
-    (set! *eg-next-id* (+ id 1))
-    (set! *eg-parent* (cons (cons id id) *eg-parent*))
-    (set! *eg-classes* (cons (cons id (list enode)) *eg-classes*))
-    (set! *eg-memo* (cons (cons enode id) *eg-memo*))
+    (define *eg-next-id* (+ id 1))
+    (define *eg-parent* (cons (cons id id) *eg-parent*))
+    (define *eg-classes* (cons (cons id (list enode)) *eg-classes*))
+    (define *eg-memo* (cons (cons enode id) *eg-memo*))
     id))
 
 ;;; ── Merge two e-classes ──────────────────────────────────────────
@@ -150,14 +150,14 @@
         r1
         (begin
           ;; Union: r1 becomes root
-          (set! *eg-parent* (alist-set r2 r1 *eg-parent*))
+          (define *eg-parent* (alist-set r2 r1 *eg-parent*))
           ;; Merge enodes from both classes
           (let ((nodes1 (alist-ref r1 *eg-classes*))
                 (nodes2 (alist-ref r2 *eg-classes*)))
-            (set! *eg-classes*
+            (define *eg-classes*
                   (alist-set r1 (append nodes1 nodes2) *eg-classes*)))
           ;; Schedule for rebuild
-          (set! *eg-pending* (cons r1 *eg-pending*))
+          (define *eg-pending* (cons r1 *eg-pending*))
           r1))))
 
 ;;; ── Rebuild: restore the congruence invariant ────────────────────
@@ -172,7 +172,7 @@
     (if (null? *eg-pending*)
         'done
         (let ((to-process *eg-pending*))
-          (set! *eg-pending* '())
+          (define *eg-pending* '())
           (for-each eg-repair! to-process)
           ;; Repairs may trigger more merges → keep going
           (loop)))))
@@ -181,38 +181,37 @@
   (let* ((id (eg-find class-id))
          (enodes (alist-ref id *eg-classes*)))
     (if (not enodes) 'done
-        (begin
-          ;; Remove old memo entries for this class's enodes
-          (for-each
-            (lambda (enode)
-              (set! *eg-memo* (alist-remove-eq enode *eg-memo*)))
-            enodes)
-          ;; Re-canonicalize all enodes and re-insert
-          (let ((canonical-nodes (map eg-canonicalize enodes)))
-            ;; Deduplicate and check for congruences
-            (let dedup ((nodes canonical-nodes) (seen '()) (kept '()))
-              (if (null? nodes)
-                  ;; Update the class with deduplicated enodes
-                  (begin
-                    (set! *eg-classes* (alist-set id (reverse kept) *eg-classes*))
-                    ;; Re-insert into memo
-                    (for-each
-                      (lambda (enode)
-                        (let ((existing (eg-lookup enode)))
-                          (if existing
-                              ;; Congruence! Another class has this same enode
-                              (eg-merge id existing)
-                              ;; Fresh entry
-                              (set! *eg-memo*
-                                    (cons (cons enode id) *eg-memo*)))))
-                      (reverse kept)))
-                  ;; Check if this canonical enode was already seen
-                  (if (memq-eq? (car nodes) seen)
-                      (dedup (cdr nodes) seen kept)
-                      (dedup (cdr nodes)
-                             (cons (car nodes) seen)
-                             (cons (car nodes) kept))))))))))
-
+      (begin
+        ;; Remove old memo entries for this class's enodes
+        (for-each
+          (lambda (enode)
+            (define *eg-memo* (alist-remove-eq enode *eg-memo*)))
+          enodes)
+        ;; Re-canonicalize all enodes and re-insert
+        (let ((canonical-nodes (map eg-canonicalize enodes)))
+          ;; Deduplicate and check for congruences
+          (let dedup ((nodes canonical-nodes) (seen '()) (kept '()))
+            (if (null? nodes)
+              ;; Update the class with deduplicated enodes
+              (begin
+                (define *eg-classes* (alist-set id (reverse kept) *eg-classes*))
+                ;; Re-insert into memo
+                (for-each
+                  (lambda (enode)
+                    (let ((existing (eg-lookup enode)))
+                      (if existing
+                        ;; Congruence! Another class has this same enode
+                        (eg-merge id existing)
+                        ;; Fresh entry
+                        (define *eg-memo*
+                          (cons (cons enode id) *eg-memo*)))))
+                  (reverse kept)))
+              ;; Check if this canonical enode was already seen
+              (if (memq-eq? (car nodes) seen)
+                (dedup (cdr nodes) seen kept)
+                (dedup (cdr nodes)
+                       (cons (car nodes) seen)
+                       (cons (car nodes) kept))))))))))
 ;; Helper: remove an entry by eq? key
 (define (alist-remove-eq key alist)
   (cond ((null? alist) '())
@@ -242,17 +241,15 @@
 ;; Match a pattern against the e-graph.
 ;; Returns list of (class-id . subst) pairs.
 (define (eg-ematch pattern)
-  (let ((results '()))
-    (for-each
-      (lambda (class-entry)
-        (let ((class-id (eg-find (car class-entry))))
-          (let ((matches (eg-match-in-class pattern class-id)))
-            (for-each
-              (lambda (subst)
-                (set! results (cons (cons class-id subst) results)))
-              matches))))
-      *eg-classes*)
-    results))
+  (fold
+    (lambda (class-entry results)
+      (let ((class-id (eg-find (car class-entry))))
+        (let ((matches (eg-match-in-class pattern class-id)))
+          (fold
+            (lambda (subst acc)
+              (cons (cons class-id subst) acc))
+            results matches))))
+    '() *eg-classes*))
 
 ;; Match a pattern in a specific class.
 ;; Returns a list of substitutions (each is an alist).
@@ -274,29 +271,27 @@
              (pat-children (cdr pattern))
              (enodes (alist-ref id *eg-classes*)))
          (if (not enodes) '()
-             (let ((matching '()))
-               (for-each
-                 (lambda (enode)
-                   (if (and (not (enode-leaf? enode))
-                            (eq? (car enode) pat-op)
-                            (= (length (cdr enode)) (length pat-children)))
-                       (let ((substs (eg-match-children
-                                       pat-children (cdr enode) (list '()))))
-                         (set! matching (append substs matching)))))
-                 enodes)
-               matching)))))))
-
+             (fold
+               (lambda (enode matching)
+                 (if (and (not (enode-leaf? enode))
+                          (eq? (car enode) pat-op)
+                          (= (length (cdr enode)) (length pat-children)))
+                     (let ((substs (eg-match-children
+                                     pat-children (cdr enode) (list '()))))
+                       (append substs matching))
+                     matching))
+               '() enodes)))))))
 ;; Match pattern children against e-node children.
 ;; Thread substitutions through: each child match produces a refined subst.
 (define (eg-match-children pat-kids enode-kids substs)
   (if (null? pat-kids)
       substs
-      (let ((new-substs '()))
-        (for-each
-          (lambda (subst)
-            (let ((matches (eg-match-child (car pat-kids) (car enode-kids) subst)))
-              (set! new-substs (append matches new-substs))))
-          substs)
+      (let ((new-substs
+              (fold
+                (lambda (subst acc)
+                  (let ((matches (eg-match-child (car pat-kids) (car enode-kids) subst)))
+                    (append matches acc)))
+                '() substs)))
         (eg-match-children (cdr pat-kids) (cdr enode-kids) new-substs))))
 
 ;; Match one pattern child against one e-node child (a class ID)
@@ -322,14 +317,13 @@
     ;; Application: recurse into the class
     (else
      (let ((matches (eg-match-in-class pattern (eg-find class-id))))
-       (let ((merged '()))
-         (for-each
-           (lambda (new-subst)
-             (let ((combined (merge-substs subst new-subst)))
-               (if combined
-                   (set! merged (cons combined merged)))))
-           matches)
-         merged)))))
+       (fold
+         (lambda (new-subst merged)
+           (let ((combined (merge-substs subst new-subst)))
+             (if combined
+                 (cons combined merged)
+                 merged)))
+         '() matches)))))
 
 ;; Merge two substitutions; return #f if they conflict
 (define (merge-substs s1 s2)
@@ -389,19 +383,18 @@
 ;;; ── Apply one rule to the entire e-graph ─────────────────────────
 
 (define (eg-apply-rule rule)
-  (let* ((matches (eg-ematch (rule-lhs rule)))
-         (n-merges 0))
-    (for-each
-      (lambda (match)
+  (let* ((matches (eg-ematch (rule-lhs rule))))
+    (fold
+      (lambda (match n-merges)
         (let ((matched-class (car match))
               (subst (cdr match)))
           (let ((new-class (eg-instantiate (rule-rhs rule) subst)))
             (if (not (= (eg-find matched-class) (eg-find new-class)))
                 (begin
                   (eg-merge matched-class new-class)
-                  (set! n-merges (+ n-merges 1)))))))
-      matches)
-    n-merges))
+                  (+ n-merges 1))
+                n-merges))))
+      0 matches)))
 
 ;;; ── Saturate: apply rules until fixpoint or limit ────────────────
 
@@ -411,12 +404,11 @@
         (begin
           (display "  Reached iteration limit: ") (display max-iters) (newline)
           iter)
-        (let ((total-merges 0))
-          (for-each
-            (lambda (rule)
-              (let ((n (eg-apply-rule rule)))
-                (set! total-merges (+ total-merges n))))
-            rules)
+        (let ((total-merges
+                (fold
+                  (lambda (rule acc)
+                    (+ acc (eg-apply-rule rule)))
+                  0 rules)))
           (eg-rebuild!)
           (if (= total-merges 0)
               (begin
@@ -430,64 +422,64 @@
 ;;; total cost is the sum.  Uses memoization to avoid exponential
 ;;; re-traversal of shared structure.
 
+(define *extract-memo* '())
+
 (define (eg-extract class-id)
-  (let ((memo '()))
-    ;; Returns (cost . term)
-    (define (best id)
-      (let* ((id (eg-find id))
-             (cached (alist-ref id memo)))
-        (if cached cached
-            (begin
-              ;; Insert sentinel BEFORE recursing to break cycles
-              (set! memo (cons (cons id (cons 999999 '???)) memo))
-              (let ((enodes (alist-ref id *eg-classes*)))
-                (if (not enodes)
-                    (cons 999999 '???)
-                    (let ((result (best-of-enodes enodes)))
-                      (set! memo (alist-set id result memo))
-                      result)))))))
+  (define *extract-memo* '())
+  ;; Returns (cost . term)
+  (define (best id)
+    (let* ((id (eg-find id))
+           (cached (alist-ref id *extract-memo*)))
+      (if cached cached
+          (begin
+            ;; Insert sentinel BEFORE recursing to break cycles
+            (define *extract-memo* (cons (cons id (cons 999999 '???)) *extract-memo*))
+            (let ((enodes (alist-ref id *eg-classes*)))
+              (if (not enodes)
+                  (cons 999999 '???)
+                  (let ((result (best-of-enodes enodes)))
+                    (define *extract-memo* (alist-set id result *extract-memo*))
+                    result)))))))
 
-    (define (best-of-enodes enodes)
-      (let loop ((nodes enodes) (best-cost 999999) (best-term '???))
-        (if (null? nodes)
-            (cons best-cost best-term)
-            (let ((cost-term (enode-cost (car nodes))))
-              (if (< (car cost-term) best-cost)
-                  (loop (cdr nodes) (car cost-term) (cdr cost-term))
-                  (loop (cdr nodes) best-cost best-term))))))
+  (define (best-of-enodes enodes)
+    (let loop ((nodes enodes) (best-cost 999999) (best-term '???))
+      (if (null? nodes)
+          (cons best-cost best-term)
+          (let ((cost-term (enode-cost (car nodes))))
+            (if (< (car cost-term) best-cost)
+                (loop (cdr nodes) (car cost-term) (cdr cost-term))
+                (loop (cdr nodes) best-cost best-term))))))
 
-    (define (enode-cost enode)
-      (if (enode-leaf? enode)
-          (cons 1 enode)
-          (let* ((child-results (map (lambda (cid) (best cid))
-                                     (enode-children enode)))
-                 (child-costs (map car child-results))
-                 (child-terms (map cdr child-results))
-                 (total (+ 1 (fold + 0 child-costs))))
-            (cons total (cons (enode-op enode) child-terms)))))
+  (define (enode-cost enode)
+    (if (enode-leaf? enode)
+        (cons 1 enode)
+        (let* ((child-results (map (lambda (cid) (best cid))
+                                   (enode-children enode)))
+               (child-costs (map car child-results))
+               (child-terms (map cdr child-results))
+               (total (+ 1 (fold + 0 child-costs))))
+          (cons total (cons (enode-op enode) child-terms)))))
 
-    (cdr (best class-id))))
+  (cdr (best class-id)))
 
 ;;; ── E-graph statistics ───────────────────────────────────────────
 
 (define (eg-num-classes)
-  (let ((seen '()))
-    (for-each
-      (lambda (entry)
+  (length
+    (fold
+      (lambda (entry seen)
         (let ((root (eg-find (car entry))))
-          (if (not (memv root seen))
-              (set! seen (cons root seen)))))
-      *eg-parent*)
-    (length seen)))
+          (if (memv root seen) seen
+              (cons root seen))))
+      '() *eg-parent*)))
 
 (define (eg-num-enodes)
-  (let ((total 0))
-    (for-each
-      (lambda (entry)
-        (if (= (eg-find (car entry)) (car entry))
-            (set! total (+ total (length (cdr entry))))))
-      *eg-classes*)
-    total))
+  (fold
+    (lambda (entry total)
+      (if (= (eg-find (car entry)) (car entry))
+          (+ total (length (cdr entry)))
+          total))
+    0 *eg-classes*))
 
 (define (memv x lst)
   (cond ((null? lst) #f)
