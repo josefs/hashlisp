@@ -27,6 +27,24 @@
     init-env))
 (newline)
 
+;;; ── New features work with memoization ───────────────────────────
+
+(display "(let ((x 10) (y 20)) (+ x y)) = ")
+(display (my-eval '(let ((x 10) (y 20)) (+ x y)) init-env))
+(newline)
+
+(display "(cond (#f 'a) (#t 'b)) = ")
+(display (my-eval '(cond (#f (quote a)) (#t (quote b))) init-env))
+(newline)
+
+(display "(and 1 2 3) = ")
+(display (my-eval '(and 1 2 3) init-env))
+(newline)
+
+(display "(or #f 42) = ")
+(display (my-eval '(or #f 42) init-env))
+(newline)
+
 ;;; ── The payoff: exponential → linear fibonacci ───────────────────
 
 (display "fib(10) = ")
@@ -51,6 +69,29 @@
         (if (< n 2) n
             (+ (self self (- n 1))
                (self self (- n 2))))))
+    init-env))
+(newline)
+
+;;; ── letrec + memoization ─────────────────────────────────────────
+
+(display "fib(25) via letrec = ")
+(display
+  (my-eval
+    '(letrec ((fib (lambda (n)
+                     (if (< n 2) n
+                         (+ (fib (- n 1)) (fib (- n 2)))))))
+       (fib 25))
+    init-env))
+(newline)
+
+;;; ── Named let (iterative, TCO + memo) ───────────────────────────
+
+(display "sum 1..1000 via named let = ")
+(display
+  (my-eval
+    '(let loop ((i 1000) (acc 0))
+       (if (= i 0) acc
+           (loop (- i 1) (+ acc i))))
     init-env))
 (newline)
 

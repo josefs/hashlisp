@@ -11,36 +11,87 @@
 (load "examples/metacircular.lsp")
 
 ;; Override my-eval with a memoized version.
-;; The memo key is (list expr env), both hash-consed.
+;; The memo key is (expr, env), both hash-consed.
 (define-memo (my-eval expr env)
   (cond
-    ((number? expr) expr)
+    ;; Self-evaluating: numbers, booleans, strings, void, nil
+    ((number? expr)  expr)
+    ((boolean? expr) expr)
+    ((string? expr)  expr)
+    ((null? expr)    expr)
+    ((void? expr)    expr)
+
+    ;; Variable lookup
     ((symbol? expr)
-     (let ((val (assoc-env expr env)))
+     (let ((val (env-lookup expr env)))
        (if val val
-           (error "unbound variable"))))
-    ((eq? (car expr) 'quote)
-     (cadr expr))
-    ((eq? (car expr) 'if)
-     (if (my-eval (cadr expr) env)
-         (my-eval (caddr expr) env)
-         (my-eval (car (cdr (cdr (cdr expr)))) env)))
-    ((eq? (car expr) 'lambda)
-     (list 'closure (cadr expr) (caddr expr) env))
-    ((eq? (car expr) 'define)
-     (let ((val (my-eval (caddr expr) env)))
-       (cons (cons (cadr expr) val) env)))
-    (else
-     (let ((fn (my-eval (car expr) env))
-           (args (map (lambda (a) (my-eval a env)) (cdr expr))))
+           (error (string-append "my-eval: unbound variable")))))
+
+    ;; Special forms (car is a symbol)
+    ((pair? expr)
+     (let ((head (car expr)))
        (cond
-         ((eq? fn 'prim-add) (+ (car args) (cadr args)))
-         ((eq? fn 'prim-sub) (- (car args) (cadr args)))
-         ((eq? fn 'prim-mul) (* (car args) (cadr args)))
-         ((eq? fn 'prim-lt) (< (car args) (cadr args)))
-         ((and (pair? fn) (eq? (car fn) 'closure))
-          (let ((params (cadr fn))
-                (body   (caddr fn))
-                (cenv   (car (cdr (cdr (cdr fn))))))
-            (my-eval body (extend-env params args cenv))))
-         (else (error "not a function")))))))
+         ((eq? head 'quote)
+          (cadr expr))
+
+         ((eq? head 'if)
+          (let ((test-val (my-eval (cadr expr) env)))
+            (if test-val
+                (my-eval (caddr expr) env)
+                (if (null? (cdr (cddr expr)))
+                    (void)
+                    (my-eval (car (cdr (cddr expr))) env)))))
+
+         ((eq? head 'cond)
+          (eval-cond (cdr expr) env))
+
+         ((eq? head 'and)
+          (eval-and (cdr expr) env))
+
+         ((eq? head 'or)
+          (eval-or (cdr expr) env))
+
+         ((eq? head 'when)
+          (if (my-eval (cadr expr) env)
+              (eval-body (cddr expr) env)
+              (void)))
+
+         ((eq? head 'unless)
+          (if (not (my-eval (cadr expr) env))
+              (eval-body (cddr expr) env)
+              (void)))
+
+         ((eq? head 'begin)
+          (eval-body (cdr expr) env))
+
+         ((eq? head 'lambda)
+          (let ((params (cadr expr))
+                (body   (cddr expr)))
+            (list 'closure params body env)))
+
+         ((eq? head 'define)
+          (eval-define (cdr expr) env))
+
+         ((eq? head 'let)
+          (eval-let (cdr expr) env))
+
+         ((eq? head 'let*)
+          (eval-let-star (cdr expr) env))
+
+         ((eq? head 'letrec)
+          (eval-letrec (cdr expr) env))
+
+         ((eq? head 'quasiquote)
+          (eval-quasiquote (cadr expr) env))
+
+         ((eq? head 'apply)
+          (let ((fn   (my-eval (cadr expr) env))
+                (args (my-eval (caddr expr) env)))
+            (apply-fn fn args)))
+
+         (else
+          (let ((fn   (my-eval (car expr) env))
+                (args (eval-args (cdr expr) env)))
+            (apply-fn fn args))))))
+
+    (else (error "my-eval: cannot evaluate expression"))))
