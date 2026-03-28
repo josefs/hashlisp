@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct SymbolTable {
     /// name → id
     map: HashMap<String, u32>,

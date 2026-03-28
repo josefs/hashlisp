@@ -1,16 +1,22 @@
 mod env;
 mod eval;
+mod eval_closure;
 mod heap;
 mod parser;
 mod printer;
 mod symbol;
 mod value;
 
+use std::os::unix::raw::off_t;
+
 use clap::Parser;
 
 use eval::Evaluator;
+use eval_closure::ClosureEvaluator;
 use printer::print_val;
 use value::Val;
+
+use crate::heap::Heap;
 
 #[derive(Parser)]
 #[command(name = "hashlisp", about = "A hash-consed Scheme interpreter")]
@@ -18,6 +24,10 @@ struct Cli {
     /// Evaluate an expression and exit
     #[arg(short, long)]
     eval: Option<String>,
+
+    /// Use the closure generating evaluator
+    #[arg(short, long)]
+    closure: bool,
 
     // Files to run
     files: Vec<String>,
@@ -90,7 +100,28 @@ fn main() {
     let mut eval = Evaluator::new();
 
     if let Some(expr) = cli.eval {
+      if cli.closure {
+        // TODO: Clean up
+        println!("Evaluating with closure-generating evaluator...");
+        let mut eval_closure = ClosureEvaluator::new();
+        match parser::parse(&expr, &mut eval_closure.heap, &mut eval_closure.syms) {
+          Err(e) => eprintln!("Parse error: {e}"),
+          Ok(exprs) => {
+            for expr in exprs {
+              match eval_closure.eval(expr) {
+                Ok(val) => {
+                  println!("Result: {}", print_val(val, &eval_closure.heap, &eval_closure.syms));
+                }
+                Err(e) => {
+                  eprintln!("Error: {e}");
+                }
+              }
+            }
+          }
+        }
+      } else {
         run_input(&mut eval, &expr, false);
+      }
     } else if !cli.files.is_empty() {
       for path in &cli.files {
         let contents = std::fs::read_to_string(path)
