@@ -6,4 +6,6 @@ description = "A Scheme-like language with a hash-consed heap"
 license = "MIT"
 
 [dependencies]
-rustyline = "14"
+rustyline = "17.0.2"
+clap = { version = "4", features = ["derive"] }
+

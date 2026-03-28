@@ -6,12 +6,23 @@ mod printer;
 mod symbol;
 mod value;
 
-use std::env as std_env;
-use std::fs;
+use clap::Parser;
 
 use eval::Evaluator;
 use printer::print_val;
 use value::Val;
+
+#[derive(Parser)]
+#[command(name = "hashlisp", about = "A hash-consed Scheme interpreter")]
+struct Cli {
+    /// Evaluate an expression and exit
+    #[arg(short, long)]
+    eval: Option<String>,
+
+    // Files to run
+    files: Vec<String>,
+}
+
 
 fn run_repl(eval: &mut Evaluator) {
     let mut rl = rustyline::DefaultEditor::new().expect("failed to create readline editor");
@@ -74,19 +85,22 @@ fn run_input(eval: &mut Evaluator, input: &str, print_result: bool) {
 }
 
 fn main() {
-    let args: Vec<String> = std_env::args().collect();
+    let cli = Cli::parse();
+
     let mut eval = Evaluator::new();
 
-    if args.len() > 1 {
-        // Run file(s)
-        for path in &args[1..] {
-            match fs::read_to_string(path) {
-                Ok(src) => run_input(&mut eval, &src, false),
-                Err(e) => eprintln!("Error reading {path}: {e}"),
-            }
-        }
+    if let Some(expr) = cli.eval {
+        run_input(&mut eval, &expr, false);
+    } else if !cli.files.is_empty() {
+      for path in &cli.files {
+        let contents = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| {
+                eprintln!("Error reading {}: {}", path, e);
+                std::process::exit(1);
+            });
+        run_input(&mut eval, &contents, false);
+      }
     } else {
-        // REPL
-        run_repl(&mut eval);
+      run_repl(&mut eval);
     }
 }
